@@ -7,28 +7,33 @@ Pushes **relative spectral composition** across 9 bands (415–680 nm + ~910 nm 
 - ams/Adafruit **AS7341** (addr 0x39)
 - Cosine (bulk) diffuser recommended
 
-## Quick Start
+### Prereqs (once per Pi)
 ```bash
 sudo apt update
-sudo apt install -y python3-full python3-venv git i2c-tools
-sudo raspi-config   # enable I2C (Interface Options → I2C → Enable)
+sudo apt install -y python3-full python3-venv git i2c-tools python3-libgpiod
+sudo raspi-config   # Interface Options → I2C → Enable
+sudo adduser $USER i2c
+# Reboot to apply I2C group + raspi-config changes
+sudo reboot
 ```
+
 Verify sensor is seen:
 ```bash
 i2cdetect -y 1   # should show "0x39"
 ```
-### Clone the repository
-```
+### Clone repository
+```bash
 cd ~
 git clone https://github.com/fredrik-markussen/as7341-RPi-lightmeter.git
 cd as7341-RPi-lightmeter
 ```
+
 ### Create and activate venv
 ```bash
 python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
+./.venv/bin/python -m pip install --upgrade pip wheel setuptools
+./.venv/bin/python -m pip install -r requirements.txt
+./.venv/bin/python -m pip install RPi.GPIO==0.7.1
 ```
 
 Sanity check: 
@@ -70,7 +75,6 @@ This will write:
 as7341_dark.json
 as7341_lux_cal.json
 
-
 into project root.
 
 ### Install & enable systemd service
@@ -78,12 +82,19 @@ into project root.
 Copy systemd template:
 ```bash
 sudo cp systemd/as7341@.service /etc/systemd/system/
-sudo systemctl daemon-reload
 ```
+### Ensure the user is in the i2c group
+sudo adduser *** i2c
+
 
 Start service for this Linux user
 ```bash
+sudo systemctl daemon-reload
 sudo systemctl enable --now as7341@admin.service
+sudo systemctl restart as7341@admin.service
+sudo systemctl status as7341@admin.service
+# Logs
+journalctl -u as7341@admin.service -f
 ```
 
 
