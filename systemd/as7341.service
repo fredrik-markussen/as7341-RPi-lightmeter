@@ -1,0 +1,16 @@
+[Unit]
+Description=AS7341 spectral publisher to InfluxDB (instance: %i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=%h/as7341-spectral
+ExecStart=%h/as7341-spectral/.venv/bin/python %h/as7341-spectral/src/as7341_influx_nir.py
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

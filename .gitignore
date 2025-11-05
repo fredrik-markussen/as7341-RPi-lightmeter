@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.build/
+
+# Virtual env
+.venv/
+
+# Editors
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Cal files (optional to version control: keep or remove these lines)
+#as7341_dark.json
+#as7341_lux_cal.json

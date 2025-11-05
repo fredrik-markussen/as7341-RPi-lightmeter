@@ -1,0 +1,4 @@
+adafruit-circuitpython-as7341
+adafruit-blinka
+requests
+numpy
