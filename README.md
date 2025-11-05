@@ -1,11 +1,15 @@
-# AS7341 Spectral Publisher (VIS8 + NIR) → InfluxDB
+# Raspberry Pi 3b+ with Adafruit AS7341 Spectral Publisher (VIS8 + NIR) to an InfluxDB
 
-Pushes **relative spectral composition** across 9 bands (415–680 nm + ~910 nm NIR) and **calibrated lux** to InfluxDB; visualize in Grafana as an XY spectrum.
+Pushes **relative spectral composition** across 9 bands (415–680 nm + ~910 nm NIR) and **calibrated lux** to InfluxDB; visualize in Grafana.
 
 ## Hardware
 - Raspberry Pi with I²C enabled
 - ams/Adafruit **AS7341** (addr 0x39)
 - Cosine (bulk) diffuser recommended
+
+## Software not included
+- InfluxDB v1.x
+- Grafana
 
 ### Prereqs (once per Pi)
 ```bash
