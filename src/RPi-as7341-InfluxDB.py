@@ -36,7 +36,7 @@ ASTEP_D = 999
 GAIN_D  = Gain.GAIN_256X
 
 AVG     = 5
-PERIOD  = 60.0
+PERIOD  = 0.0
 VERBOSE_BANDS = False
 LOG_EVERY_N   = 1
 
