@@ -57,7 +57,7 @@ AVG = 5                       # Number of sensor frames to average per reading
                               # Higher = less noise but slower response
                               # Typical: 3-10 frames
 
-PERIOD = 0                 # Minimum seconds between measurements
+PERIOD = 60                 # Minimum seconds between measurements
                               # Set to 0.0 for maximum speed (limited by integration time)
 
 VERBOSE_BANDS = False         # If True, log each spectral band individually
