@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# AS7341 → InfluxDB v1 (OPTIMIZED VERSION WITH SPECTRAL ACCURACY IMPROVEMENTS)
+# AS7341 → InfluxDB v1 (SIMPLIFIED CONFIG VERSION)
 # 
 # PERFORMANCE OPTIMIZATIONS:
 # - Parallel HTTP writes with ThreadPoolExecutor
@@ -37,30 +37,27 @@ DEVICE = "RPi-1"              # Unique device name written to InfluxDB as "Devic
 MEAS = "LIGHT"                # InfluxDB measurement name for spectral data points
                               # All spectral readings will be written to this measurement
 
-# Sensor Integration Settings (MUST MATCH CALIBRATION)
-# -----------------------------------------------------
-# These three parameters control light collection time and sensitivity
-# Formula: Integration time (ms) = (ATIME + 1) × (ASTEP + 1) × 2.78 µs
+# Sensor Settings (MUST MATCH CALIBRATION)
+# -----------------------------------------
+INTEGRATION_TIME_MS = 50    # Light collection time in milliseconds (1-1812 ms)
+                              # Longer = more light collected, better for dim conditions
+                              # Shorter = less light collected, better for bright conditions
+                              # Typical values: 10-50ms for indoor, 1-10ms for outdoor
 
-ATIME_D = 15                  # ATIME register (0-255): Number of integration time increments
-                              # Smaller = shorter integration, less light collected
-
-ASTEP_D = 999                 # ASTEP register (0-65534): Integration time step size
-                              # Combined with ATIME to set total integration time
-                              # Current settings: (15+1)×(999+1)×2.78µs ≈ 44.5 ms
-
-GAIN_D = Gain.GAIN_256X       # Analog gain multiplier applied to ADC readings
+GAIN = Gain.GAIN_256X         # Analog gain multiplier applied to ADC readings
                               # Options: GAIN_0_5X, GAIN_1X, GAIN_2X, GAIN_4X, GAIN_8X,
                               #          GAIN_16X, GAIN_32X, GAIN_64X, GAIN_128X,
                               #          GAIN_256X, GAIN_512X
                               # Higher gain = more sensitive but saturates faster in bright light
+                              # Typical: GAIN_128X or GAIN_256X for indoor
 
 # Measurement Averaging and Timing
 # ---------------------------------
 AVG = 5                       # Number of sensor frames to average per reading
-                              # Higher = less noise but slower response (median is taken)
+                              # Higher = less noise but slower response
+                              # Typical: 3-10 frames
 
-PERIOD = 60.0                 # Minimum seconds between measurements
+PERIOD = 0                 # Minimum seconds between measurements
                               # Set to 0.0 for maximum speed (limited by integration time)
 
 VERBOSE_BANDS = False         # If True, log each spectral band individually
@@ -69,23 +66,10 @@ VERBOSE_BANDS = False         # If True, log each spectral band individually
 LOG_EVERY_N = 1               # Log to console every N samples (1 = log every sample)
                               # Set higher (e.g., 10) to reduce console spam
 
-# Autorange Settings (Dynamic Gain Adjustment)
-# ---------------------------------------------
-AUTORANGE_ENABLE = False      # Enable automatic gain adjustment based on signal level
-                              # Recommended: False for consistent calibration
-                              # Set True for wide dynamic range environments
-
-AUTORANGE_HYST = 3            # Consecutive readings needed before changing gain
-                              # Prevents rapid gain switching from transient signals
-
-ADJUST_ASTEPS = False         # Allow ASTEP adjustment when gain limits are reached
-                              # Usually False; only enable for extreme dynamic range
-
-SAT_WARN_FRAC = 0.875         # Warn/reduce gain when signal exceeds this fraction of ADC full-scale
-                              # 0.875 = 87.5% of maximum ADC value
-
-UNDERFLOW_FRAC = 0.003        # Increase gain when signal below this fraction of full-scale
-                              # 0.003 = 0.3% indicates very weak signal
+# Saturation Warning
+# ------------------
+SAT_WARN_FRAC = 0.875         # Warn when signal exceeds this fraction of ADC full-scale
+                              # 0.875 = 87.5% of maximum (suggests reducing gain or integration time)
 
 # InfluxDB Configuration
 # ----------------------
@@ -146,13 +130,6 @@ RESPONSIVITY_CORRECTION = [
 # Set to 0.01 to detect very low light while filtering complete darkness
 MIN_SIGNAL_THRESHOLD = 0.01
 
-# Autorange gain ladder: ordered list of available gain settings
-# Used by autorange algorithm to step up/down through gain values
-GAIN_ORDER = [
-    Gain.GAIN_0_5X, Gain.GAIN_1X,   Gain.GAIN_2X,   Gain.GAIN_4X,   Gain.GAIN_8X,
-    Gain.GAIN_16X,  Gain.GAIN_32X,  Gain.GAIN_64X,  Gain.GAIN_128X, Gain.GAIN_256X, Gain.GAIN_512X,
-]
-
 # Gain multiplier lookup table: converts Gain enum to numeric multiplier
 # Used to normalize raw ADC counts to BasicCounts for calibration
 GAIN_MULT = {
@@ -162,83 +139,55 @@ GAIN_MULT = {
 }
 
 # ============================
-# OPTIMIZATION: Sensor state cache
-# ============================
-class SensorCache:
-    """
-    Cache expensive calculations that only change when sensor settings change.
-
-    Avoids recalculating integration time, ADC full-scale, and gain multiplier
-    on every measurement loop iteration. Only recalculates when ATIME, ASTEP,
-    or GAIN settings are modified (e.g., by autorange).
-    """
-    def __init__(self, sensor):
-        """
-        Initialize cache with sensor reference.
-
-        Args:
-            sensor: AS7341 sensor object to monitor
-        """
-        self.sensor = sensor
-        self._it_ms = None          # Cached integration time in milliseconds
-        self._fs = None             # Cached ADC full-scale value
-        self._gain_mult = None      # Cached gain multiplier
-        self._last_atime = None     # Last known ATIME value
-        self._last_astep = None     # Last known ASTEP value
-        self._last_gain = None      # Last known gain setting
-
-    def _needs_update(self):
-        """Check if sensor settings have changed since last cache."""
-        return (self._last_atime != self.sensor.atime or
-                self._last_astep != self.sensor.astep or
-                self._last_gain != self.sensor.gain)
-
-    def get_integration_time_ms(self):
-        """
-        Get integration time in milliseconds, recalculating only if settings changed.
-
-        Formula: (ATIME + 1) × (ASTEP + 1) × 2.78 µs
-
-        Returns:
-            float: Integration time in milliseconds
-        """
-        if self._needs_update() or self._it_ms is None:
-            self._it_ms = (self.sensor.atime + 1) * (self.sensor.astep + 1) * 2.78e-3
-            self._last_atime = self.sensor.atime
-            self._last_astep = self.sensor.astep
-        return self._it_ms
-
-    def get_adc_fullscale(self):
-        """
-        Get ADC full-scale value, recalculating only if settings changed.
-
-        Full-scale is (ATIME + 1) × (ASTEP + 1), capped at 16-bit max (65535).
-
-        Returns:
-            int: Maximum ADC count value
-        """
-        if self._needs_update() or self._fs is None:
-            fs = (self.sensor.atime + 1) * (self.sensor.astep + 1)
-            self._fs = 65535 if fs > 65535 else fs
-            self._last_atime = self.sensor.atime
-            self._last_astep = self.sensor.astep
-        return self._fs
-
-    def get_gain_mult(self):
-        """
-        Get gain multiplier as float, recalculating only if gain changed.
-
-        Returns:
-            float: Gain multiplier (0.5 to 512.0)
-        """
-        if self._last_gain != self.sensor.gain or self._gain_mult is None:
-            self._gain_mult = float(GAIN_MULT.get(self.sensor.gain, 1.0))
-            self._last_gain = self.sensor.gain
-        return self._gain_mult
-
-# ============================
 # Helper Functions
 # ============================
+
+def ms_to_atime_astep(target_ms):
+    """
+    Convert desired integration time in milliseconds to ATIME and ASTEP register values.
+    
+    Formula: integration_time_ms = (ATIME + 1) × (ASTEP + 1) × 2.78e-3
+    
+    Strategy: Maximize ASTEP (better precision), minimize ATIME.
+    Constraints: ATIME ∈ [0, 255], ASTEP ∈ [0, 65534]
+    
+    Args:
+        target_ms: Desired integration time in milliseconds (1-1812 ms)
+    
+    Returns:
+        tuple: (atime, astep) register values that give closest match to target
+    
+    Raises:
+        ValueError: If target_ms is outside achievable range
+    """
+    # Calculate total increments needed
+    # target_ms = (ATIME + 1) × (ASTEP + 1) × 2.78e-3
+    # total_increments = target_ms / 2.78e-3
+    total_increments = target_ms / 2.78e-3
+    
+    # Check if achievable
+    min_increments = 1 * 1  # ATIME=0, ASTEP=0
+    max_increments = 256 * 65535  # ATIME=255, ASTEP=65534
+    
+    if total_increments < min_increments:
+        raise ValueError(f"Integration time {target_ms}ms too short (min ~0.003ms)")
+    if total_increments > max_increments:
+        raise ValueError(f"Integration time {target_ms}ms too long (max ~1812ms)")
+    
+    # Strategy: Use smallest ATIME that allows ASTEP <= 65534
+    # This maximizes ASTEP for better time resolution
+    for atime in range(256):
+        astep = (total_increments / (atime + 1)) - 1
+        if 0 <= astep <= 65534:
+            astep = int(round(astep))
+            # Verify and return
+            actual_ms = (atime + 1) * (astep + 1) * 2.78e-3
+            if abs(actual_ms - target_ms) / target_ms > 0.05:  # > 5% error
+                print(f"[WARN] Integration time: requested {target_ms}ms, actual {actual_ms:.2f}ms ({abs(actual_ms-target_ms)/target_ms*100:.1f}% error)")
+            return atime, astep
+    
+    # Fallback: shouldn't reach here
+    raise ValueError(f"Could not find valid ATIME/ASTEP for {target_ms}ms")
 
 def integration_time_ms(atime:int, astep:int)->float:
     """
@@ -423,63 +372,6 @@ def avg_frames(s:AS7341, n:int):
         acc_nir   += float(nval)
     return [x/n for x in acc8], acc_clear/n, acc_nir/n
 
-def autorange_update(s:AS7341, max_after_dark:float, state:dict, cache:SensorCache):
-    """
-    Automatically adjust sensor gain based on signal level.
-
-    Implements hysteresis to prevent rapid switching. Reduces gain if signal
-    near saturation, increases gain if signal too weak.
-
-    Args:
-        s: AS7341 sensor object (gain will be modified)
-        max_after_dark: Maximum dark-corrected channel value
-        state: Dict to track consecutive high/low counts
-        cache: SensorCache to invalidate after gain changes
-    """
-    if not AUTORANGE_ENABLE: return
-
-    # Calculate thresholds based on ADC full-scale
-    fs = float(cache.get_adc_fullscale())
-    sat_th = SAT_WARN_FRAC * fs      # High threshold (87.5% of full-scale)
-    lo_th  = UNDERFLOW_FRAC * fs     # Low threshold (0.3% of full-scale)
-
-    # Track consecutive high/low readings for hysteresis
-    hi = state.setdefault("hi_cnt",0); lo = state.setdefault("lo_cnt",0)
-    if max_after_dark >= sat_th:
-        state["hi_cnt"]=hi+1; state["lo_cnt"]=0
-    elif max_after_dark <= lo_th:
-        state["lo_cnt"]=lo+1; state["hi_cnt"]=0
-    else:
-        # Signal in acceptable range, reset counters
-        state["hi_cnt"]=state["lo_cnt"]=0
-        return
-
-    # Reduce gain if saturating (consecutive high readings)
-    if state["hi_cnt"]>=AUTORANGE_HYST:
-        gi = GAIN_ORDER.index(s.gain) if s.gain in GAIN_ORDER else GAIN_ORDER.index(GAIN_D)
-        if gi>0:
-            s.gain = GAIN_ORDER[gi-1]  # Step down one gain level
-            cache._needs_update()
-            if state.get("verbose",False): print(f"[AUTO] Gain -> {s.gain} (down)")
-        elif ADJUST_ASTEPS and s.astep>0:
-            s.astep = max(0, s.astep//2)  # Reduce integration time if at min gain
-            cache._needs_update()
-            if state.get("verbose",False): print(f"[AUTO] ASTEP -> {s.astep} (down)")
-        state["hi_cnt"]=0
-
-    # Increase gain if signal too weak (consecutive low readings)
-    if state["lo_cnt"]>=AUTORANGE_HYST:
-        gi = GAIN_ORDER.index(s.gain) if s.gain in GAIN_ORDER else GAIN_ORDER.index(GAIN_D)
-        if gi < len(GAIN_ORDER)-1:
-            s.gain = GAIN_ORDER[gi+1]  # Step up one gain level
-            cache._needs_update()
-            if state.get("verbose",False): print(f"[AUTO] Gain -> {s.gain} (up)")
-        elif ADJUST_ASTEPS and s.astep<65534:
-            s.astep = min(65534, s.astep*2 + 1)  # Increase integration time if at max gain
-            cache._needs_update()
-            if state.get("verbose",False): print(f"[AUTO] ASTEP -> {s.astep} (up)")
-        state["lo_cnt"]=0
-
 # ============================
 # InfluxDB Line Protocol Building
 # ============================
@@ -571,7 +463,7 @@ def main():
     Main measurement loop: read sensor, calculate spectra and lux, write to InfluxDB.
 
     Initialization:
-    1. Configure AS7341 sensor with ATIME, ASTEP, GAIN settings
+    1. Configure AS7341 sensor with calculated ATIME/ASTEP from INTEGRATION_TIME_MS
     2. Load dark offset and lux calibration files
     3. Setup HTTP sessions with connection pooling
     4. Create thread pool for parallel writes
@@ -591,15 +483,22 @@ def main():
     # ========================================
     i2c = board.I2C()                          # Initialize I2C bus
     s = AS7341(i2c)                            # Create sensor object at default address 0x39
-    s.atime = ATIME_D; s.astep = ASTEP_D; s.gain = GAIN_D  # Apply user config settings
+    
+    # Convert user-friendly integration time to register values
+    atime, astep = ms_to_atime_astep(INTEGRATION_TIME_MS)
+    s.atime = atime
+    s.astep = astep
+    s.gain = GAIN
+    
     try:
         s.flicker_detection_enabled = False    # Disable flicker detection for consistent timing
     except Exception:
         pass                                   # Ignore if not supported by driver version
 
-    # Create performance cache for integration time, full-scale, and gain calculations
-    cache = SensorCache(s)
-    it_ms = cache.get_integration_time_ms()    # Calculate initial integration time
+    # Calculate actual integration time (may differ slightly from requested)
+    actual_it_ms = integration_time_ms(atime, astep)
+    fs = adc_fullscale(atime, astep)
+    gnum = current_gain_mult(s)
 
     # ========================================
     # INITIALIZATION: Calibration Files
@@ -660,14 +559,14 @@ def main():
     # ========================================
     # STARTUP: Print Configuration Summary
     # ========================================
-    print("AS7341 -> Influx v1 fan-out (OPTIMIZED + SPECTRAL ACCURACY):")
+    print("AS7341 -> Influx v1 fan-out (SIMPLIFIED CONFIG + SPECTRAL ACCURACY):")
     for ent in sessions: print("  -", ent["label"])
-    print(f"Start: Device={DEVICE}, gain={s.gain}, ATIME={s.atime}, ASTEP={s.astep}, IT≈{it_ms:.1f} ms, AVG={AVG}, PERIOD={PERIOD}s")
-    print(f"Optimizations: parallel writes, retry budget={RETRY_BUDGET_PER_LOOP}, cached calculations")
+    print(f"Start: Device={DEVICE}, gain={s.gain}, IT={actual_it_ms:.1f}ms (requested {INTEGRATION_TIME_MS}ms), AVG={AVG}, PERIOD={PERIOD}s")
+    print(f"Registers: ATIME={atime}, ASTEP={astep}, ADC_FS={fs}")
+    print(f"Optimizations: parallel writes, retry budget={RETRY_BUDGET_PER_LOOP}")
     print(f"Spectral improvements: responsivity correction, VIS8 normalized separately from NIR, min threshold={MIN_SIGNAL_THRESHOLD}")
     if not dark_meta_ok: print("[INFO] Dark offsets inactive (no file or meta mismatch).")
 
-    ar_state = {"verbose": True}  # Autorange state tracker
     sample_idx = 0                # Sample counter for logging
 
     # ========================================
@@ -678,14 +577,13 @@ def main():
             loop_start = time.time()  # Track loop timing for performance monitoring
 
             # -------- Step 1: Read Sensor --------
-            # Average AVG frames to reduce noise (median aggregation)
+            # Average AVG frames to reduce noise
             vis_raw, clear_raw, nir_raw = avg_frames(s, AVG)
 
             # Check for saturation and warn user
-            fs = float(cache.get_adc_fullscale())  # Get ADC maximum from cache
             sat_th = SAT_WARN_FRAC * fs
             if max(vis_raw + [nir_raw, clear_raw]) >= sat_th:
-                print(f"[WARN] Near saturation: max={int(max(vis_raw+[nir_raw, clear_raw]))} (gain={s.gain}, IT≈{cache.get_integration_time_ms():.1f}ms, FS={int(fs)})")
+                print(f"[WARN] Near saturation: max={int(max(vis_raw+[nir_raw, clear_raw]))} (gain={s.gain}, IT={actual_it_ms:.1f}ms, FS={int(fs)})")
 
             # -------- Step 2: Dark Correction --------
             # Subtract dark offset from each channel (thermal noise baseline)
@@ -696,9 +594,7 @@ def main():
             # -------- Step 3: Normalize to BasicCounts --------
             # BasicCounts = (raw - dark) / (gain × integration_time_ms)
             # This makes readings independent of exposure settings for calibration
-            gnum  = cache.get_gain_mult()           # Get gain multiplier from cache
-            it_ms = cache.get_integration_time_ms()  # Get integration time from cache
-            denom = max(1e-9, gnum * it_ms)         # Avoid division by zero
+            denom = max(1e-9, gnum * actual_it_ms)         # Avoid division by zero
             bc8   = [v / denom for v in vis]
             bcnir = nir / denom
 
@@ -726,9 +622,6 @@ def main():
             # This separates NIR from visible spectrum composition
             total_energy = sum_vis + bcnir
             rel_nir = bcnir / total_energy if total_energy > MIN_SIGNAL_THRESHOLD else 0.0
-
-            # Autorange
-            autorange_update(s, max(vis + [nir]), ar_state, cache)
 
             # -------- Build payload --------
             ts = time.time_ns()
@@ -781,13 +674,13 @@ def main():
                 log_time_str = time.strftime('%Y-%m-%d %H:%M:%S')
                 if VERBOSE_BANDS:
                     for i, (wl_nm, v_rel) in enumerate(zip(WLS9[:8], rel_vis8)):
-                        print(f"{log_time_str} wl={wl_nm}nm rel={v_rel:.4f} lux={lux:.1f} clear={int(clear)} (gain={s.gain}, IT≈{it_ms:.0f}ms)")
+                        print(f"{log_time_str} wl={wl_nm}nm rel={v_rel:.4f} lux={lux:.1f} clear={int(clear)} (gain={s.gain}, IT={actual_it_ms:.0f}ms)")
                     # Log NIR separately
                     print(f"{log_time_str} wl=910nm(NIR) rel_nir={rel_nir:.4f} (as fraction of VIS+NIR)")
                 else:
                     # Show signal strength indicator
                     sig_status = "OK" if sum_vis >= MIN_SIGNAL_THRESHOLD else "LOW"
-                    print(f"{log_time_str} lux={lux:.1f} maxVISNIR={int(max(vis+[nir]))} clear={int(clear)} sig={sig_status} gain={s.gain} IT≈{it_ms:.0f}ms")
+                    print(f"{log_time_str} lux={lux:.1f} maxVISNIR={int(max(vis+[nir]))} clear={int(clear)} sig={sig_status} gain={s.gain} IT={actual_it_ms:.0f}ms")
 
             # Periodic stats
             if sample_idx % 100 == 0:
@@ -801,7 +694,7 @@ def main():
             loop_elapsed = time.time() - loop_start
             metrics["loop_times"].append(loop_elapsed)
             
-            min_period = max(0.02, (cache.get_integration_time_ms()/1000.0) * AVG + 0.02)
+            min_period = max(0.02, (actual_it_ms/1000.0) * AVG + 0.02)
             sleep_time = max(PERIOD, min_period - loop_elapsed, 0.0)
             time.sleep(sleep_time)
 
