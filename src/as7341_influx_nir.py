@@ -14,9 +14,15 @@
 # - Minimum signal threshold (prevents noisy spectra in darkness)
 # - NIR reported as fraction of total energy (VIS+NIR)
 #
+# OFFLINE BUFFER:
+# - CSV fallback to ~/Documents/Lightmeter_csv_out/ when all InfluxDB
+#   endpoints fail (archive-only). 10-min tmp files in daily_tmp/, merged
+#   into per-day aggregates in the parent dir; recovers leftover tmps on
+#   startup so a power cycle never loses more than one in-flight write.
+#
 # Result: 50-60% faster + much more accurate spectral composition
 
-import time, json, os
+import time, json, os, csv, datetime, re
 from pathlib import Path
 from collections import deque, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -97,6 +103,18 @@ TIMEOUT_RETRY = (1, 3)        # HTTP timeout for retry queue: (connect_sec, read
 BASE_DIR = Path(__file__).resolve().parent.parent  # Project root directory
 DARK_FILE = BASE_DIR / "as7341_dark.json"          # Dark offset calibration file
 CAL_FILE = BASE_DIR / "as7341_lux_cal.json"        # Lux calibration coefficients
+
+# CSV Offline Buffer (only written when ALL InfluxDB endpoints fail)
+# ------------------------------------------------------------------
+CSV_OUT_DIR = Path.home() / "Documents" / "Lightmeter_csv_out"   # Daily aggregated files live here
+CSV_TMP_DIR = CSV_OUT_DIR / "daily_tmp"                          # 10-minute work files live here
+CSV_TAG = "as7341-RPi_lightlogger"                               # Common suffix used in all CSV filenames
+CSV_ROTATE_INTERVAL_S = 10 * 60                                  # Close & start a new tmp file every 10 minutes
+CSV_HEADER = ["timestamp_iso", "device", "lux", "clear",
+              "rel_415", "rel_445", "rel_480", "rel_515",
+              "rel_555", "rel_590", "rel_630", "rel_680", "rel_nir"]
+# Matches:  YYYY-MM-DD-HHMM-as7341-RPi_lightlogger_tmp.csv
+CSV_TMP_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})-(\d{4})-" + re.escape(CSV_TAG) + r"_tmp\.csv$")
 
 # ============================
 # Constants
@@ -424,6 +442,138 @@ def build_influx_lines(ts_ns:int, rel_vis8, rel_nir, lux_value, clear_value):
     return lines
 
 # ============================
+# CSV Offline Buffer
+# ============================
+# Strategy:
+#   - On EVERY all-endpoints-failed sample, append one row to a 10-minute
+#     "tmp" file in CSV_TMP_DIR. Each row is flushed to disk immediately.
+#   - When the active tmp file is >= 10 min old, close it and start a new one.
+#     This bounds power-loss data loss to roughly the OS write-back window.
+#   - Periodically (and on rotation) merge tmp files whose date prefix is
+#     before today into a per-day daily file in CSV_OUT_DIR; delete sources.
+#   - On startup, merge ANY leftover tmp files (regardless of age) into the
+#     matching daily file, so a power cycle never leaves dangling tmp files.
+
+def csv_tmp_path(start_epoch:float)->Path:
+    """Path of a fresh 10-min tmp CSV named by its start time (local clock)."""
+    dt = datetime.datetime.fromtimestamp(start_epoch)
+    name = dt.strftime("%Y-%m-%d-%H%M") + f"-{CSV_TAG}_tmp.csv"
+    return CSV_TMP_DIR / name
+
+def csv_daily_path(date_str:str)->Path:
+    """Path of the daily aggregate file for a given YYYY-MM-DD date string."""
+    return CSV_OUT_DIR / f"{date_str}-{CSV_TAG}_daily.csv"
+
+def merge_tmp_files_to_daily(tmp_files):
+    """
+    Group tmp files by their date prefix and append each group's rows
+    to the matching daily file (creating it if needed). Deletes each source
+    only after it has been successfully appended.
+
+    Returns the number of source files merged.
+    """
+    by_day = {}
+    for p in tmp_files:
+        m = CSV_TMP_RE.match(p.name)
+        if m:
+            by_day.setdefault(m.group(1), []).append(p)
+
+    merged = 0
+    for date_str, files in by_day.items():
+        files.sort()                                # Lexicographic sort = chronological
+        target = csv_daily_path(date_str)
+        target_existed = target.exists()
+        try:
+            with open(target, "a", newline="") as out:
+                w = csv.writer(out)
+                wrote_header = target_existed
+                for src in files:
+                    with open(src, "r", newline="") as inp:
+                        r = csv.reader(inp)
+                        header = next(r, None)
+                        if not wrote_header and header:
+                            w.writerow(header)
+                            wrote_header = True
+                        for row in r:
+                            w.writerow(row)
+                out.flush()
+            for src in files:
+                src.unlink()
+            merged += len(files)
+        except Exception as e:
+            print(f"[ERR] CSV merge for {date_str}: {e}")
+    return merged
+
+def aggregate_completed_days():
+    """Merge tmp files whose date prefix is BEFORE today into daily files."""
+    if not CSV_TMP_DIR.exists():
+        return 0
+    today = datetime.date.today().isoformat()
+    candidates = []
+    for p in CSV_TMP_DIR.iterdir():
+        if not p.is_file():
+            continue
+        m = CSV_TMP_RE.match(p.name)
+        if m and m.group(1) < today:
+            candidates.append(p)
+    if not candidates:
+        return 0
+    n = merge_tmp_files_to_daily(candidates)
+    if n:
+        print(f"[CSV] Aggregated {n} tmp file(s) into daily file(s).")
+    return n
+
+def csv_startup_recovery():
+    """On launch, merge any pre-existing tmp files into their daily files."""
+    if not CSV_TMP_DIR.exists():
+        return
+    leftovers = [p for p in CSV_TMP_DIR.iterdir()
+                 if p.is_file() and CSV_TMP_RE.match(p.name)]
+    if not leftovers:
+        return
+    n = merge_tmp_files_to_daily(leftovers)
+    print(f"[STARTUP] Merged {n} leftover tmp CSV file(s) into daily file(s).")
+
+def write_csv_fallback(ts_ns:int, lux:float, clear:float, rel_vis8, rel_nir:float, state:dict):
+    """
+    Append one row to the active 10-min tmp CSV. Rotates the active file
+    if it has been open for >= CSV_ROTATE_INTERVAL_S; runs aggregation of
+    any completed-day tmp files at rotation time.
+
+    `state` carries the active path and its open time across calls:
+        {"path": Path|None, "started_at": float|None}
+    """
+    CSV_TMP_DIR.mkdir(parents=True, exist_ok=True)
+    now = ts_ns / 1e9
+
+    # Rotate if the active file has aged out
+    if state["started_at"] is not None and (now - state["started_at"]) >= CSV_ROTATE_INTERVAL_S:
+        state["path"] = None
+        state["started_at"] = None
+        try:
+            aggregate_completed_days()
+        except Exception as e:
+            print(f"[WARN] CSV aggregation failed: {e}")
+
+    # Open a new tmp file if needed
+    if state["path"] is None:
+        state["started_at"] = now
+        state["path"] = csv_tmp_path(now)
+
+    new_file = not state["path"].exists()
+    iso = datetime.datetime.fromtimestamp(now, datetime.timezone.utc).isoformat()
+    row = [iso, DEVICE, f"{lux:.3f}", f"{int(clear)}"]
+    row.extend(f"{x:.6f}" for x in rel_vis8)
+    row.append(f"{rel_nir:.6f}")
+
+    with open(state["path"], "a", newline="") as f:
+        w = csv.writer(f)
+        if new_file:
+            w.writerow(CSV_HEADER)
+        w.writerow(row)
+        f.flush()
+
+# ============================
 # OPTIMIZATION: Parallel HTTP write function
 # ============================
 def write_to_endpoint(ent, payload, is_retry=False):
@@ -554,7 +704,13 @@ def main():
         "http_failures": defaultdict(int),   # Failed writes per endpoint
         "retry_queue_sizes": {label: 0 for label in retry_qs},  # Current queue depths
         "loop_times": deque(maxlen=100),     # Recent loop execution times
+        "csv_rows_written": 0,               # Rows appended to offline CSV buffer
     }
+
+    # CSV offline-buffer state (active tmp file path + open time) and
+    # one-shot recovery of any tmp files left behind by a previous run.
+    csv_state = {"path": None, "started_at": None}
+    csv_startup_recovery()
 
     # ========================================
     # STARTUP: Print Configuration Summary
@@ -565,6 +721,7 @@ def main():
     print(f"Registers: ATIME={atime}, ASTEP={astep}, ADC_FS={fs}")
     print(f"Optimizations: parallel writes, retry budget={RETRY_BUDGET_PER_LOOP}")
     print(f"Spectral improvements: responsivity correction, VIS8 normalized separately from NIR, min threshold={MIN_SIGNAL_THRESHOLD}")
+    print(f"Offline buffer: CSV out dir={CSV_OUT_DIR} (10-min tmp files in {CSV_TMP_DIR.name}/, daily aggregates in parent)")
     if not dark_meta_ok: print("[INFO] Dark offsets inactive (no file or meta mismatch).")
 
     sample_idx = 0                # Sample counter for logging
@@ -655,14 +812,24 @@ def main():
                 futures.append(future)
 
             # Collect results
+            any_success = False
             for future in as_completed(futures, timeout=max(TIMEOUT_CURRENT)*1.2):
                 label, success, error = future.result()
                 if success:
                     metrics["http_successes"][label] += 1
+                    any_success = True
                 else:
                     metrics["http_failures"][label] += 1
                     retry_qs[label].append(payload)
                     print(f"[ERR] {label}: {error}")
+
+            # CSV fallback when all endpoints fail (archive-only, no replay)
+            if not any_success:
+                try:
+                    write_csv_fallback(ts, lux, clear, rel_vis8, rel_nir, csv_state)
+                    metrics["csv_rows_written"] += 1
+                except Exception as e:
+                    print(f"[ERR] CSV fallback failed: {e}")
 
             # Update retry queue metrics
             for label, q in retry_qs.items():
@@ -704,6 +871,7 @@ def main():
         print(f"HTTP successes: {dict(metrics['http_successes'])}")
         print(f"HTTP failures: {dict(metrics['http_failures'])}")
         print(f"Pending retries: {dict(metrics['retry_queue_sizes'])}")
+        print(f"CSV fallback rows: {metrics['csv_rows_written']} (out dir: {CSV_OUT_DIR})")
     finally:
         executor.shutdown(wait=False)
 
