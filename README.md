@@ -123,11 +123,20 @@ This walks through three phases:
 - C-7000 spectral data either pasted from a 2-column CSV
   (`wavelength_nm, irradiance_W_m2_nm`) or entered manually at the 8 channel
   wavelengths.
-- Output: `as7341_responsivity.json`. The main script picks it up
-  automatically at startup; without it, datasheet defaults are used.
+- Output: `as7341_responsivity.json` with two blocks:
+  - `corrections` — per-channel multipliers normalised to 555 nm = 1.0,
+    used to correct the relative spectrum (`rel_intensity`).
+  - `responsivity_BC_per_W_m2_nm` — per-channel absolute responsivity in
+    BasicCounts per W/m²/nm. When present, the runtime emits absolute
+    spectral irradiance per VIS8 channel (`irr_*` CSV columns,
+    `irradiance` Influx field).
+  The main script picks both up automatically at startup; without the file,
+  datasheet defaults are used for `corrections` and absolute irradiance is
+  not emitted.
 - NIR (~910 nm) is **not** measured here — the C-7000 covers 380–780 nm only.
-  The runtime keeps a datasheet default for NIR. To override, edit
-  `as7341_responsivity.json` and add a `nir` key under `corrections`.
+  The runtime keeps a datasheet default for NIR composition correction
+  (overridable via a `nir` key under `corrections`); absolute NIR irradiance
+  is never emitted.
 
 ### Phase 3 — Lux model
 
@@ -194,13 +203,30 @@ directory. Edit `WorkingDirectory` / `ExecStart` if your layout differs.
 **Spectral composition** — measurement `LIGHT`, 9 points per cycle:
 
 - Tags: `Device=<DEVICE>`, `wavelength_nm=415|445|480|515|555|590|630|680|910`.
-- Field: `rel_intensity` (VIS8 sums to 1.0; the NIR point is the
-  fraction of corrected VIS+NIR energy).
+- Fields:
+  - `rel_intensity` — relative composition (VIS8 sums to 1.0; the NIR point
+    is the fraction of corrected VIS+NIR energy).
+  - `irradiance` — absolute spectral irradiance in W/m²/nm at the channel
+    center. Emitted on the 8 VIS points only, and only after Phase 2 has
+    produced an absolute responsivity calibration. Omitted from NIR (the
+    C-7000 reference does not reach 910 nm).
 
 **Lux** — measurement `LIGHT_LUX`, 1 point per cycle:
 
 - Tags: `Device=<DEVICE>`, `method=lin_basic`.
 - Fields: `lux` (calibrated), `clear` (raw CLEAR channel).
+
+**CSV offline buffer** — same data, 21 columns:
+
+```
+timestamp_iso,device,lux,clear,
+rel_415,rel_445,rel_480,rel_515,rel_555,rel_590,rel_630,rel_680,rel_nir,
+irr_415,irr_445,irr_480,irr_515,irr_555,irr_590,irr_630,irr_680
+```
+
+The `irr_*` cells (W/m²/nm at channel center) are populated only when Phase 2
+has produced an absolute responsivity; otherwise they are emitted empty so
+the column count stays stable.
 
 Quick sanity query:
 
@@ -304,3 +330,6 @@ simplest option) and wait for sync, or fit a DS3231 RTC HAT.
 - BasicCounts: `(raw - dark) / (gain × integration_time_ms)`. The lux model
   is fit and applied in this unit so that gain/IT changes between calibration
   and measurement do not invalidate the model.
+- Absolute spectral irradiance: `irradiance_W_m2_nm[i] = BasicCounts[i] /
+  responsivity_BC_per_W_m2_nm[i]`, where `responsivity_BC_per_W_m2_nm` is
+  written by `as7341_calibrate.py` Phase 2 from C-7000 reference irradiance.

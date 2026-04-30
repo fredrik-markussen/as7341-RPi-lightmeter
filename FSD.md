@@ -17,14 +17,16 @@ portable field measurements where network connectivity is intermittent.
   680 nm), CLEAR (broadband), NIR (~910 nm).
 - **Per-cycle outputs:**
   - `LIGHT` measurement — 9 points with `rel_intensity` field, tagged by
-    `Device` and `wavelength_nm`.
+    `Device` and `wavelength_nm`. VIS8 points additionally carry an
+    `irradiance` field (W/m²/nm at channel center) when an absolute Phase 2
+    calibration is loaded.
   - `LIGHT_LUX` measurement — `lux` (calibrated) and `clear` (raw) fields,
     tagged by `Device` and `method`.
 - **Sink:** InfluxDB v1 HTTP line protocol; multi-endpoint fan-out.
 - **Local artefacts:**
   - `as7341_dark_{hi,lo}.json` — per-channel dark offsets + metadata, one per sensitivity preset.
   - `as7341_lux_cal_{hi,lo}.json` — VIS8 linear regression model + metadata, one per preset.
-  - `as7341_responsivity.json` — empirical per-channel responsivity corrections (optional; overrides datasheet defaults).
+  - `as7341_responsivity.json` — empirical per-channel responsivity (optional). Carries normalised `corrections` (replaces datasheet defaults) and absolute `responsivity_BC_per_W_m2_nm` (enables W/m²/nm runtime output).
 
 ## 4. Operating Modes
 - **M1 — Fixed station:** Continuous, networked. Live writes to InfluxDB.
@@ -38,7 +40,7 @@ portable field measurements where network connectivity is intermittent.
 | F2  | Sensor settings (gain, ATIME, ASTEP) must match calibration; mismatch surfaces a warning at startup and on every sensitivity switch, for both dark and lux cal. |
 | F3  | Dark-frame correction with metadata-validated offsets per channel (incl. NIR). |
 | F4  | Lux from VIS8 OLS or ridge regression with intercept, MAD outlier rejection, K-fold CV, optional non-negative weights (`--lux-nnls`). |
-| F5  | Spectral composition: VIS8 normalised to 1.0 with responsivity correction; NIR (~910 nm) reported as fraction of VIS+NIR using a datasheet-default correction (overridable via `as7341_responsivity.json`'s `nir` key, since the C-7000 reference does not reach 910 nm). |
+| F5  | Spectral composition: VIS8 normalised to 1.0 with responsivity correction; NIR (~910 nm) reported as fraction of VIS+NIR using a datasheet-default correction (overridable via `as7341_responsivity.json`'s `nir` key, since the C-7000 reference does not reach 910 nm). When Phase 2 has produced absolute responsivity (`responsivity_BC_per_W_m2_nm`), the runtime additionally emits absolute spectral irradiance (W/m²/nm at channel center) per VIS8 channel. |
 | F6  | **Auto-sensitivity** — two fixed presets (HI: high gain/long IT for dim; LO: low gain/short IT for bright). Hysteresis-counted switches on saturation/underflow. Each preset has its own dark and lux cal files. |
 | F7  | Multi-endpoint InfluxDB fan-out with parallel writes; per-endpoint connect/read timeouts and a wall-clock budget so a single hung endpoint cannot stall the loop. |
 | F8  | **Buffering** — failed writes are held in a per-endpoint in-memory retry queue (bounded by `MAX_RETRY_QUEUE`) and replayed when the endpoint recovers, in chronological order. When **all** endpoints fail simultaneously, samples are also written to a daily CSV archive in `~/Documents/Lightmeter_csv_out/` (rotation: 10-min tmp files merged into per-day files; startup recovery merges any leftovers). The CSV is archive-only — it is **not** automatically replayed to InfluxDB. Process restart drops the in-memory queue, so prolonged outages are recoverable from CSV but require manual back-fill. |
@@ -62,12 +64,17 @@ spectroradiometer + CoolLED pE-4000 + dome diffusers.
 - **Phase 2 — Spectral responsivity (VIS8):** AS7341 + C-7000 side-by-side at
   5 CoolLED intensity levels (default 10/25/50/75/90 %). C-7000 SPD input via
   CSV export (sorted automatically) or manual entry at the 8 channel
-  wavelengths. Computes empirical per-channel correction factors normalised to
-  555 nm = 1.0 → `as7341_responsivity.json`. Loaded automatically by the main
-  script at startup if present; falls back to datasheet values otherwise.
-  NIR (~910 nm) is **not** measured in Phase 2 because the C-7000 covers
-  380–780 nm only; the script keeps the datasheet default for NIR. To override,
-  add a `nir` entry under `corrections` in `as7341_responsivity.json`.
+  wavelengths. Writes `as7341_responsivity.json` containing two blocks:
+  `corrections` (per-channel multipliers normalised to 555 nm = 1.0, used to
+  correct the relative spectrum) and `responsivity_BC_per_W_m2_nm` (absolute
+  per-channel responsivity in BasicCounts per W/m²/nm, used to convert
+  BasicCounts to absolute spectral irradiance at runtime). Loaded
+  automatically by the main script at startup if present; falls back to
+  datasheet values for `corrections` and skips absolute irradiance output
+  otherwise. NIR (~910 nm) is **not** measured in Phase 2 because the C-7000
+  covers 380–780 nm only; the script keeps the datasheet default for NIR
+  spectral composition and emits no absolute NIR irradiance. To override the
+  NIR composition correction, add a `nir` entry under `corrections`.
 - **Phase 3 — Lux model:** ≥ 10 diverse scenes per preset against C-7000 lux
   readings (default 12, recommended 12–20). VIS8 with intercept; default fit is
   ridge (α=0.01) for stability with small samples; OLS available with

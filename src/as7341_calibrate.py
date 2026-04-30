@@ -384,10 +384,12 @@ def run_phase2(s, args):
     out_path = Path(args.out_dir) / "as7341_responsivity.json"
     result = {
         "corrections": {b: round(c, 6) for b, c in zip(BANDS8, corrections)},
+        "responsivity_BC_per_W_m2_nm": {b: r for b, r in zip(BANDS8, raw_resp)},
         "meta": {
             "gain": str(s.gain), "it_ms": it_ms,
             "n_levels": args.resp_levels, "resp_avg_frames": args.resp_avg,
             "instrument": "Seconic C-7000",
+            "units": "responsivity_BC_per_W_m2_nm in BasicCounts per (W/m^2/nm)",
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         },
     }
@@ -400,8 +402,13 @@ def run_phase2(s, args):
     for b, meas, ds in zip(BANDS8, corrections, datasheet):
         diff = meas - ds
         print(f"  {b:>8}  {meas:>10.4f}  {ds:>10.4f}  {diff:>+8.4f}")
+
+    print("\nAbsolute responsivity (BasicCounts per W/m^2/nm):")
+    for b, r in zip(BANDS8, raw_resp):
+        print(f"  {b:>8}  {r:>12.4e}")
     print(f"\nSaved {out_path.name}")
-    print("Restart as7341_influx_nir.py to apply the new corrections.")
+    print("Restart as7341_influx_nir.py to apply the new corrections "
+          "and emit absolute irradiance per channel.")
 
 # ============================
 # Phase 3 — Lux calibration
