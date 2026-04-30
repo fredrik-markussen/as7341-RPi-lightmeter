@@ -238,20 +238,28 @@ curl -G http://<INFLUX_HOST>:8086/query \
 
 ---
 
-## Offline buffering
+## CSV output and offline buffering
 
-Failed writes go into per-endpoint in-memory retry queues (bounded by
+Failed Influx writes go into per-endpoint in-memory retry queues (bounded by
 `MAX_RETRY_QUEUE`, default 500) and replay when the endpoint recovers.
 
-If **every** endpoint fails on a given sample, the row is also appended to a
-10-minute tmp CSV in `~/Documents/Lightmeter_csv_out/daily_tmp/`. Tmp files
-are merged into per-day aggregates in the parent directory; on startup, any
-leftover tmps from a previous run are merged. The CSV is archive-only — it
-is not automatically replayed to InfluxDB. For a prolonged outage that
-exceeds the retry queue, import the daily CSVs manually after recovery.
+The CSV path under `~/Documents/Lightmeter_csv_out/` is written in one of
+two modes, controlled by the `CSV_ALWAYS` setting in `.env`:
 
-Filenames and CSV row timestamps are both UTC, so daily files group by UTC
-date regardless of the Pi's local timezone.
+- **`CSV_ALWAYS=false` (default)** — CSV is written only when **every**
+  Influx endpoint fails on a given sample. True offline-buffer behaviour;
+  CSV is archive-only and not auto-replayed, so for outages exceeding the
+  retry queue, import the daily CSVs manually after recovery.
+- **`CSV_ALWAYS=true`** — a CSV row is written every measurement cycle
+  regardless of Influx success. Useful for field experiments where you
+  want a guaranteed local record alongside the live Influx feed, or when
+  you don't trust the network.
+
+Either way, rows go into a 10-minute tmp CSV in `daily_tmp/`; tmp files
+are merged into per-day aggregates in the parent directory; on startup,
+any leftover tmps from a previous run are merged. Filenames and row
+timestamps are both UTC, so daily files group by UTC date regardless of
+the Pi's local timezone.
 
 ---
 

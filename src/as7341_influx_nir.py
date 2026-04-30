@@ -80,6 +80,10 @@ ENDPOINTS = [
 MAX_RETRY_QUEUE = 500         # Maximum failed writes to queue per endpoint before dropping
                               # Prevents memory overflow during extended network outages
 
+CSV_ALWAYS = False            # If True, write a CSV row every cycle regardless of
+                              # InfluxDB success. If False, CSV is only written when
+                              # ALL endpoints fail (true offline-buffer behaviour).
+
 # HTTP Performance Tuning
 # -----------------------
 RETRY_BUDGET_PER_LOOP = 10    # Maximum retry queue flushes attempted per measurement loop
@@ -112,7 +116,7 @@ SENS_LO = {                                 # Bright light — low gain, short i
 # ---------------------------------------------------------------------------
 def _apply_env(path: Path):
     """Load key=value pairs from a .env file and override config globals above."""
-    global DEVICE, ENDPOINTS, AVG, PERIOD
+    global DEVICE, ENDPOINTS, AVG, PERIOD, CSV_ALWAYS
     global AUTORANGE_ENABLE, AUTORANGE_HYST, AUTORANGE_SAT_FRAC, AUTORANGE_LOW_FRAC
     if not path.exists():
         return
@@ -133,6 +137,7 @@ def _apply_env(path: Path):
     if "AUTORANGE_HYST"     in env: AUTORANGE_HYST     = int(env["AUTORANGE_HYST"])
     if "AUTORANGE_SAT_FRAC" in env: AUTORANGE_SAT_FRAC = float(env["AUTORANGE_SAT_FRAC"])
     if "AUTORANGE_LOW_FRAC" in env: AUTORANGE_LOW_FRAC = float(env["AUTORANGE_LOW_FRAC"])
+    if "CSV_ALWAYS"         in env: CSV_ALWAYS         = env["CSV_ALWAYS"].lower() in ("true","1","yes")
     if "SENS_HI_IT_MS"      in env: SENS_HI["integration_time_ms"] = int(env["SENS_HI_IT_MS"])
     if "SENS_HI_GAIN"       in env: SENS_HI["gain"]                = getattr(Gain, env["SENS_HI_GAIN"])
     if "SENS_LO_IT_MS"      in env: SENS_LO["integration_time_ms"] = int(env["SENS_LO_IT_MS"])
@@ -140,8 +145,9 @@ def _apply_env(path: Path):
 
 _apply_env(BASE_DIR / ".env")
 
-# CSV Offline Buffer (only written when ALL InfluxDB endpoints fail)
-# ------------------------------------------------------------------
+# CSV Output (every cycle when CSV_ALWAYS=true; otherwise only when ALL
+# InfluxDB endpoints fail — i.e. true offline-buffer behaviour).
+# ----------------------------------------------------------------------
 CSV_OUT_DIR = Path.home() / "Documents" / "Lightmeter_csv_out"   # Daily aggregated files live here
 CSV_TMP_DIR = CSV_OUT_DIR / "daily_tmp"                          # 10-minute work files live here
 CSV_TAG = "as7341-RPi_lightlogger"                               # Common suffix used in all CSV filenames
@@ -851,7 +857,7 @@ def main():
         "http_failures": defaultdict(int),   # Failed writes per endpoint
         "retry_queue_sizes": {label: 0 for label in retry_qs},  # Current queue depths
         "loop_times": deque(maxlen=100),     # Recent loop execution times
-        "csv_rows_written": 0,               # Rows appended to offline CSV buffer
+        "csv_rows_written": 0,               # Rows appended to CSV output
     }
 
     # CSV offline-buffer state (active tmp file path + open time) and
@@ -870,7 +876,7 @@ def main():
     print(f"Autorange: {'ON' if AUTORANGE_ENABLE else 'OFF'}, hyst={AUTORANGE_HYST}, "
           f"sat_frac={AUTORANGE_SAT_FRAC}, low_frac={AUTORANGE_LOW_FRAC}")
     print(f"Starting in HI sensitivity: ATIME={atime}, ASTEP={astep}, IT={actual_it_ms:.1f}ms, ADC_FS={fs}")
-    print(f"Offline buffer: {CSV_OUT_DIR}")
+    print(f"CSV output: {CSV_OUT_DIR} ({'every cycle' if CSV_ALWAYS else 'only on all-endpoints-fail'})")
     check_clock_sane()
 
     sample_idx = 0                # Sample counter for logging
@@ -1016,13 +1022,14 @@ def main():
                         metrics["http_failures"][label] += 1
                         retry_qs[label].append(payload)
 
-            # CSV fallback when all endpoints fail (archive-only, no replay)
-            if not any_success:
+            # CSV write: every cycle when CSV_ALWAYS, else only when all
+            # endpoints failed (archive-only, no auto-replay either way).
+            if CSV_ALWAYS or not any_success:
                 try:
                     write_csv_fallback(ts, lux, clear, rel_vis8, rel_nir, csv_state, irr_vis8)
                     metrics["csv_rows_written"] += 1
                 except Exception as e:
-                    print(f"[ERR] CSV fallback failed: {e}")
+                    print(f"[ERR] CSV write failed: {e}")
 
             # Update retry queue metrics
             for label, q in retry_qs.items():
@@ -1064,7 +1071,7 @@ def main():
         print(f"HTTP successes: {dict(metrics['http_successes'])}")
         print(f"HTTP failures: {dict(metrics['http_failures'])}")
         print(f"Pending retries: {dict(metrics['retry_queue_sizes'])}")
-        print(f"CSV fallback rows: {metrics['csv_rows_written']} (out dir: {CSV_OUT_DIR})")
+        print(f"CSV rows written: {metrics['csv_rows_written']} (out dir: {CSV_OUT_DIR})")
     finally:
         executor.shutdown(wait=False)
 
