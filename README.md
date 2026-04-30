@@ -263,6 +263,36 @@ the Pi's local timezone.
 
 ---
 
+## Headless health check (status.json)
+
+Every cycle the runtime atomically writes a small JSON snapshot to
+`~/Documents/Lightmeter_csv_out/status.json`. It carries the latest sample
+(lux, spectral composition, irradiance, sensor settings, saturation
+fraction), per-endpoint health (success/failure counters, retry queue
+depth, last-success and last-failure timestamps with the failure message),
+the CSV state, and process uptime. The file is written via tmp+rename so
+a concurrent reader never sees a half-written file.
+
+Quick liveness checks over SSH:
+
+```bash
+# Raw dump
+ssh pi@RPi-1 'cat ~/Documents/Lightmeter_csv_out/status.json'
+
+# One-line summary
+ssh pi@RPi-1 'jq -r ".last_sample | \"\(.timestamp_iso) lux=\(.lux) sat=\(.saturation_frac) preset=\(.active_preset)\"" \
+              ~/Documents/Lightmeter_csv_out/status.json'
+
+# Endpoint health at a glance
+ssh pi@RPi-1 'jq ".endpoints | to_entries[] | {ep: .key, ok: .value.successes, fail: .value.failures, q: .value.retry_queue, last_ok: .value.last_success_iso}" \
+              ~/Documents/Lightmeter_csv_out/status.json'
+```
+
+If `status.json` is older than a couple of cycles, the process is wedged
+or stopped — `systemctl status as7341@$USER.service` will tell you why.
+
+---
+
 ## Field operation: clock sync without RTC
 
 A stock Raspberry Pi has no battery-backed RTC. At boot it restores the last

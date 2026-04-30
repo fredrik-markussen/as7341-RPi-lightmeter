@@ -152,6 +152,7 @@ CSV_OUT_DIR = Path.home() / "Documents" / "Lightmeter_csv_out"   # Daily aggrega
 CSV_TMP_DIR = CSV_OUT_DIR / "daily_tmp"                          # 10-minute work files live here
 CSV_TAG = "as7341-RPi_lightlogger"                               # Common suffix used in all CSV filenames
 CSV_ROTATE_INTERVAL_S = 10 * 60                                  # Close & start a new tmp file every 10 minutes
+STATUS_FILE = CSV_OUT_DIR / "status.json"                        # Atomic per-cycle health snapshot
 CSV_HEADER = ["timestamp_iso", "device", "lux", "clear",
               "rel_415", "rel_445", "rel_480", "rel_515",
               "rel_555", "rel_590", "rel_630", "rel_680", "rel_nir",
@@ -708,6 +709,24 @@ def write_csv_fallback(ts_ns:int, lux:float, clear:float, rel_vis8, rel_nir:floa
         f.flush()
 
 # ============================
+# Status JSON (per-cycle health snapshot for headless ops)
+# ============================
+def _iso_from_ns(ts_ns:int)->str:
+    """UTC ISO 8601 from nanosecond Unix timestamp."""
+    return datetime.datetime.fromtimestamp(ts_ns / 1e9, datetime.timezone.utc).isoformat()
+
+def _atomic_write_json(path:Path, obj):
+    """Atomic JSON write via tmp+rename, so a concurrent reader (e.g. an SSH
+    user `cat`-ing the status file) never sees a half-written file. POSIX
+    rename is atomic within a filesystem.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.parent / (path.name + ".tmp")
+    with open(tmp, "w") as f:
+        json.dump(obj, f, indent=2)
+    tmp.replace(path)
+
+# ============================
 # OPTIMIZATION: Parallel HTTP write function
 # ============================
 def write_to_endpoint(ent, payload, is_retry=False):
@@ -850,6 +869,9 @@ def main():
     # Create thread pool for parallel HTTP writes to all endpoints
     executor = ThreadPoolExecutor(max_workers=len(ENDPOINTS))
 
+    process_start_ns = time.time_ns()
+    process_start_iso = _iso_from_ns(process_start_ns)
+
     # Initialize performance tracking metrics
     metrics = {
         "samples_collected": 0,              # Total measurements taken
@@ -858,6 +880,9 @@ def main():
         "retry_queue_sizes": {label: 0 for label in retry_qs},  # Current queue depths
         "loop_times": deque(maxlen=100),     # Recent loop execution times
         "csv_rows_written": 0,               # Rows appended to CSV output
+        "last_success_ts": {label: 0 for label in retry_qs},   # ns; 0 = never
+        "last_failure_ts": {label: 0 for label in retry_qs},   # ns; 0 = never
+        "last_failure_error": {label: None for label in retry_qs},
     }
 
     # CSV offline-buffer state (active tmp file path + open time) and
@@ -877,6 +902,7 @@ def main():
           f"sat_frac={AUTORANGE_SAT_FRAC}, low_frac={AUTORANGE_LOW_FRAC}")
     print(f"Starting in HI sensitivity: ATIME={atime}, ASTEP={astep}, IT={actual_it_ms:.1f}ms, ADC_FS={fs}")
     print(f"CSV output: {CSV_OUT_DIR} ({'every cycle' if CSV_ALWAYS else 'only on all-endpoints-fail'})")
+    print(f"Status JSON: {STATUS_FILE}")
     check_clock_sane()
 
     sample_idx = 0                # Sample counter for logging
@@ -986,10 +1012,13 @@ def main():
                         q.popleft()
                         flushed += 1
                         metrics["http_successes"][label] += 1
+                        metrics["last_success_ts"][label] = time.time_ns()
                     else:
                         # Stop on first failure for this endpoint
                         if flushed == 0:  # Only log if first attempt failed
                             print(f"[WARN] (retry) {label}: {error}")
+                        metrics["last_failure_ts"][label] = time.time_ns()
+                        metrics["last_failure_error"][label] = error
                         break
 
             # -------- OPTIMIZATION: Parallel writes to all endpoints --------
@@ -1006,9 +1035,12 @@ def main():
                     label, success, error = future.result()
                     if success:
                         metrics["http_successes"][label] += 1
+                        metrics["last_success_ts"][label] = ts
                         any_success = True
                     else:
                         metrics["http_failures"][label] += 1
+                        metrics["last_failure_ts"][label] = ts
+                        metrics["last_failure_error"][label] = error
                         retry_qs[label].append(payload)
                         print(f"[ERR] {label}: {error}")
             except FuturesTimeoutError:
@@ -1020,6 +1052,8 @@ def main():
                         fut.cancel()
                         label = ent["label"]
                         metrics["http_failures"][label] += 1
+                        metrics["last_failure_ts"][label] = ts
+                        metrics["last_failure_error"][label] = f"timeout after {ac_timeout:.1f}s"
                         retry_qs[label].append(payload)
 
             # CSV write: every cycle when CSV_ALWAYS, else only when all
@@ -1034,6 +1068,53 @@ def main():
             # Update retry queue metrics
             for label, q in retry_qs.items():
                 metrics["retry_queue_sizes"][label] = len(q)
+
+            # -------- Status snapshot (atomic JSON, headless health check) --------
+            try:
+                peak_now = max(vis_raw + [nir_raw, clear_raw])
+                status = {
+                    "device": DEVICE,
+                    "process_start_iso": process_start_iso,
+                    "uptime_s": (ts - process_start_ns) / 1e9,
+                    "samples_collected": metrics["samples_collected"],
+                    "responsivity_abs_loaded": RESPONSIVITY_ABS is not None,
+                    "csv": {
+                        "rows_written": metrics["csv_rows_written"],
+                        "always_on": CSV_ALWAYS,
+                        "out_dir": str(CSV_OUT_DIR),
+                    },
+                    "last_sample": {
+                        "timestamp_iso": _iso_from_ns(ts),
+                        "lux": round(lux, 3),
+                        "clear": int(clear),
+                        "active_preset": active_preset,
+                        "gain": str(s.gain),
+                        "atime": atime,
+                        "astep": astep,
+                        "it_ms": round(actual_it_ms, 2),
+                        "saturation_frac": round(peak_now / fs, 4) if fs else None,
+                        "rel_vis8": [round(v, 6) for v in rel_vis8],
+                        "rel_nir": round(rel_nir, 6),
+                        "irr_vis8": ([float(f"{v:.6e}") for v in irr_vis8]
+                                     if irr_vis8 is not None else None),
+                    },
+                    "endpoints": {
+                        label: {
+                            "successes": metrics["http_successes"][label],
+                            "failures":  metrics["http_failures"][label],
+                            "retry_queue": len(retry_qs[label]),
+                            "last_success_iso": (_iso_from_ns(metrics["last_success_ts"][label])
+                                                 if metrics["last_success_ts"][label] else None),
+                            "last_failure_iso": (_iso_from_ns(metrics["last_failure_ts"][label])
+                                                 if metrics["last_failure_ts"][label] else None),
+                            "last_failure_error": metrics["last_failure_error"][label],
+                        }
+                        for label in retry_qs
+                    },
+                }
+                _atomic_write_json(STATUS_FILE, status)
+            except Exception as e:
+                print(f"[WARN] status.json write failed: {e}")
 
             # -------- Logging --------
             if (sample_idx % max(1, LOG_EVERY_N)) == 0:
