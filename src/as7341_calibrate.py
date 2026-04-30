@@ -242,7 +242,7 @@ def run_phase1(s, args):
             "meta": {
                 "gain": str(s.gain), "atime": atime, "astep": astep,
                 "tint_ms": it_ms, "samples": args.dark_samples,
-                "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             },
             "clear": clear_med,
         }
@@ -388,7 +388,7 @@ def run_phase2(s, args):
             "gain": str(s.gain), "it_ms": it_ms,
             "n_levels": args.resp_levels, "resp_avg_frames": args.resp_avg,
             "instrument": "Seconic C-7000",
-            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         },
     }
     with open(out_path, "w") as f:
@@ -513,7 +513,7 @@ def run_phase3(s, args):
                 "n_scenes_used": len(rows),
                 "rmse_train": rmse_train, "r2_train": r2_train,
                 "rmse_cv": rmse_cv, "r2_cv": r2_cv,
-                "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             },
         }
         with open(out_path, "w") as f:

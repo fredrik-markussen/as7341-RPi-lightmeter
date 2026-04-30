@@ -22,7 +22,7 @@
 #
 # Result: 50-60% faster + much more accurate spectral composition
 
-import time, json, os, csv, datetime, re
+import time, json, os, csv, datetime, re, subprocess
 from pathlib import Path
 from collections import deque, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
@@ -543,8 +543,13 @@ def build_influx_lines(ts_ns:int, rel_vis8, rel_nir, lux_value, clear_value):
 #     matching daily file, so a power cycle never leaves dangling tmp files.
 
 def csv_tmp_path(start_epoch:float)->Path:
-    """Path of a fresh 10-min tmp CSV named by its start time (local clock)."""
-    dt = datetime.datetime.fromtimestamp(start_epoch)
+    """Path of a fresh 10-min tmp CSV named by its start time in UTC.
+
+    Filename and row contents both use UTC so daily aggregates group by UTC
+    date — unambiguous when the device moves between timezones or runs in
+    a non-local TZ.
+    """
+    dt = datetime.datetime.fromtimestamp(start_epoch, datetime.timezone.utc)
     name = dt.strftime("%Y-%m-%d-%H%M") + f"-{CSV_TAG}_tmp.csv"
     return CSV_TMP_DIR / name
 
@@ -593,10 +598,10 @@ def merge_tmp_files_to_daily(tmp_files):
     return merged
 
 def aggregate_completed_days():
-    """Merge tmp files whose date prefix is BEFORE today into daily files."""
+    """Merge tmp files whose date prefix is BEFORE today (UTC) into daily files."""
     if not CSV_TMP_DIR.exists():
         return 0
-    today = datetime.date.today().isoformat()
+    today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
     candidates = []
     for p in CSV_TMP_DIR.iterdir():
         if not p.is_file():
@@ -692,6 +697,35 @@ def write_to_endpoint(ent, payload, is_retry=False):
             return ent["label"], False, f"HTTP {r.status_code}: {r.text.strip()[:100]}"
     except requests.RequestException as e:
         return ent["label"], False, str(e)[:100]
+
+# ============================
+# Startup time sanity
+# ============================
+def check_clock_sane():
+    """Warn if the system clock looks unset or unsynchronised.
+
+    Pis without an RTC restore the clock from fake-hwclock at boot, so a
+    cold start without network leaves timestamps stuck at the last shutdown
+    time until NTP catches up. For field operation: connect a phone
+    hotspot, wait for NTP sync, then disconnect — the clock will keep
+    running for the duration of the experiment.
+    """
+    now = datetime.datetime.now()
+    if now.year < 2025:
+        print(f"[WARN] System clock looks unset (now={now.isoformat()}). "
+              "CSV/Influx timestamps will be wrong until NTP sync. "
+              "Connect a network with internet access (e.g. phone hotspot) and re-check.")
+        return
+    try:
+        r = subprocess.run(
+            ["timedatectl", "show", "-p", "NTPSynchronized", "--value"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if r.returncode == 0 and r.stdout.strip() == "no":
+            print("[WARN] NTP not synchronised. Timestamps may drift; "
+                  "connect a network with internet access to sync the clock.")
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
 
 # ============================
 # Main Loop
@@ -802,6 +836,7 @@ def main():
           f"sat_frac={AUTORANGE_SAT_FRAC}, low_frac={AUTORANGE_LOW_FRAC}")
     print(f"Starting in HI sensitivity: ATIME={atime}, ASTEP={astep}, IT={actual_it_ms:.1f}ms, ADC_FS={fs}")
     print(f"Offline buffer: {CSV_OUT_DIR}")
+    check_clock_sane()
 
     sample_idx = 0                # Sample counter for logging
 

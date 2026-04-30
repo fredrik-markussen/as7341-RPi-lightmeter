@@ -102,7 +102,7 @@ def main():
             "astep":     int(s.astep),
             "tint_ms":   actual_ms,
             "samples":   args.samples,
-            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         },
         "clear": clear_med,
     }

@@ -224,6 +224,42 @@ leftover tmps from a previous run are merged. The CSV is archive-only — it
 is not automatically replayed to InfluxDB. For a prolonged outage that
 exceeds the retry queue, import the daily CSVs manually after recovery.
 
+Filenames and CSV row timestamps are both UTC, so daily files group by UTC
+date regardless of the Pi's local timezone.
+
+---
+
+## Field operation: clock sync without RTC
+
+A stock Raspberry Pi has no battery-backed RTC. At boot it restores the last
+saved time from `fake-hwclock` and only corrects to wall-clock time once it
+sees an NTP server. For field measurements that means CSV timestamps are
+only as good as the last sync — a cold boot with no network leaves rows
+stamped with the previous shutdown's time until NTP catches up.
+
+**Recommended pre-deployment routine:**
+
+1. Pre-configure the Pi to auto-connect to a phone hotspot (and optionally
+   your home Wi-Fi). On Raspberry Pi OS Bookworm:
+   ```bash
+   sudo nmcli device wifi connect "<hotspot SSID>" password "<password>"
+   ```
+   Repeat for each network you want it to remember; NetworkManager keeps the
+   profiles and reconnects automatically when in range.
+2. In the field, power up the Pi within range of the configured hotspot.
+3. Verify NTP sync — `timedatectl` should report `NTP service: active` and
+   `System clock synchronized: yes`.
+4. Disconnect the hotspot. The Pi keeps its synced clock for the duration
+   of the experiment as long as it stays powered.
+
+`as7341_influx_nir.py` checks `timedatectl` at startup and prints a warning
+if the clock is unset (year < 2025) or NTP is unsynchronised, so you'll see
+a loud message in `journalctl` rather than discovering bad timestamps later.
+
+For unattended deployments where you can't guarantee NTP at every power-up,
+add a battery-backed RTC HAT (e.g. DS3231) — Raspberry Pi OS supports it
+out of the box via `dtoverlay=i2c-rtc,ds3231` in `/boot/firmware/config.txt`.
+
 ---
 
 ## Troubleshooting
@@ -252,6 +288,12 @@ preset.
 - Confirm the database exists: `influx -execute "SHOW DATABASES"`.
 - The script keeps retrying in the background; check
   `journalctl -u as7341@$USER.service` for the retry queue size.
+
+**`[WARN] System clock looks unset` or `[WARN] NTP not synchronised`**
+The Pi has no RTC and hasn't reached an NTP server. See
+[Field operation: clock sync without RTC](#field-operation-clock-sync-without-rtc)
+above. Bring up a network with internet access (phone hotspot is the
+simplest option) and wait for sync, or fit a DS3231 RTC HAT.
 
 ---
 
