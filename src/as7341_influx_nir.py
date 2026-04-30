@@ -25,10 +25,10 @@
 import time, json, os, csv, datetime, re
 from pathlib import Path
 from collections import deque, defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 import requests
 from requests.adapters import HTTPAdapter
-import board, busio
+import board
 from adafruit_as7341 import AS7341, Gain
 
 # ============================
@@ -43,19 +43,12 @@ DEVICE = "RPi-1"              # Unique device name written to InfluxDB as "Devic
 MEAS = "LIGHT"                # InfluxDB measurement name for spectral data points
                               # All spectral readings will be written to this measurement
 
-# Sensor Settings (MUST MATCH CALIBRATION)
-# -----------------------------------------
-INTEGRATION_TIME_MS = 50    # Light collection time in milliseconds (1-1812 ms)
-                              # Longer = more light collected, better for dim conditions
-                              # Shorter = less light collected, better for bright conditions
-                              # Typical values: 10-50ms for indoor, 1-10ms for outdoor
-
-GAIN = Gain.GAIN_256X         # Analog gain multiplier applied to ADC readings
-                              # Options: GAIN_0_5X, GAIN_1X, GAIN_2X, GAIN_4X, GAIN_8X,
-                              #          GAIN_16X, GAIN_32X, GAIN_64X, GAIN_128X,
-                              #          GAIN_256X, GAIN_512X
-                              # Higher gain = more sensitive but saturates faster in bright light
-                              # Typical: GAIN_128X or GAIN_256X for indoor
+# Auto-Sensitivity Switching
+# --------------------------
+AUTORANGE_ENABLE   = True    # Switch between HI/LO presets automatically
+AUTORANGE_HYST     = 3       # Consecutive frames above/below threshold before switching
+AUTORANGE_SAT_FRAC = 0.875   # Switch to LO when peak raw signal >= this fraction of ADC FS
+AUTORANGE_LOW_FRAC = 0.003   # Switch to HI when peak raw signal <= this fraction of ADC FS
 
 # Measurement Averaging and Timing
 # ---------------------------------
@@ -98,11 +91,54 @@ TIMEOUT_CURRENT = (0.5, 2)    # HTTP timeout for current measurement: (connect_s
 TIMEOUT_RETRY = (1, 3)        # HTTP timeout for retry queue: (connect_sec, read_sec)
                               # More patient timeout for background retries
 
-# Calibration File Paths
-# ----------------------
+# Sensitivity Presets and Calibration Paths
+# ------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent.parent  # Project root directory
-DARK_FILE = BASE_DIR / "as7341_dark.json"          # Dark offset calibration file
-CAL_FILE = BASE_DIR / "as7341_lux_cal.json"        # Lux calibration coefficients
+
+SENS_HI = {                                 # Dim light — high gain, long integration
+    "integration_time_ms": 50,
+    "gain": Gain.GAIN_256X,
+    "dark_file": BASE_DIR / "as7341_dark_hi.json",
+    "cal_file":  BASE_DIR / "as7341_lux_cal_hi.json",
+}
+SENS_LO = {                                 # Bright light — low gain, short integration
+    "integration_time_ms": 10,
+    "gain": Gain.GAIN_16X,
+    "dark_file": BASE_DIR / "as7341_dark_lo.json",
+    "cal_file":  BASE_DIR / "as7341_lux_cal_lo.json",
+}
+
+# .env Overrides (optional — copy config/sample.env to .env in project root)
+# ---------------------------------------------------------------------------
+def _apply_env(path: Path):
+    """Load key=value pairs from a .env file and override config globals above."""
+    global DEVICE, ENDPOINTS, AVG, PERIOD
+    global AUTORANGE_ENABLE, AUTORANGE_HYST, AUTORANGE_SAT_FRAC, AUTORANGE_LOW_FRAC
+    if not path.exists():
+        return
+    env = {}
+    with open(path) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if not _line or _line.startswith('#'):
+                continue
+            if '=' in _line:
+                _k, _, _v = _line.partition('=')
+                env[_k.strip()] = _v.strip()
+    if "DEVICE"             in env: DEVICE             = env["DEVICE"]
+    if "INFLUX_ENDPOINTS"   in env: ENDPOINTS          = [tuple(e) for e in json.loads(env["INFLUX_ENDPOINTS"])]
+    if "AVG"                in env: AVG                = int(env["AVG"])
+    if "PERIOD"             in env: PERIOD             = float(env["PERIOD"])
+    if "AUTORANGE_ENABLE"   in env: AUTORANGE_ENABLE   = env["AUTORANGE_ENABLE"].lower() in ("true","1","yes")
+    if "AUTORANGE_HYST"     in env: AUTORANGE_HYST     = int(env["AUTORANGE_HYST"])
+    if "AUTORANGE_SAT_FRAC" in env: AUTORANGE_SAT_FRAC = float(env["AUTORANGE_SAT_FRAC"])
+    if "AUTORANGE_LOW_FRAC" in env: AUTORANGE_LOW_FRAC = float(env["AUTORANGE_LOW_FRAC"])
+    if "SENS_HI_IT_MS"      in env: SENS_HI["integration_time_ms"] = int(env["SENS_HI_IT_MS"])
+    if "SENS_HI_GAIN"       in env: SENS_HI["gain"]                = getattr(Gain, env["SENS_HI_GAIN"])
+    if "SENS_LO_IT_MS"      in env: SENS_LO["integration_time_ms"] = int(env["SENS_LO_IT_MS"])
+    if "SENS_LO_GAIN"       in env: SENS_LO["gain"]                = getattr(Gain, env["SENS_LO_GAIN"])
+
+_apply_env(BASE_DIR / ".env")
 
 # CSV Offline Buffer (only written when ALL InfluxDB endpoints fail)
 # ------------------------------------------------------------------
@@ -128,19 +164,34 @@ VIS8 = BANDS9[:8]  # Visible channels only (excludes NIR for separate processing
 # SPECTRAL ACCURACY IMPROVEMENTS
 # ============================
 # Responsivity correction factors (normalize to F5/555nm = 1.0 as reference)
-# Based on AS7341 typical responsivity values from datasheet
-# These correct for the fact that different channels have different sensitivities
-# Without correction, blue/red channels appear artificially weak in spectral composition
+# Based on AS7341 typical responsivity values from datasheet.
+# Without correction, blue/red channels appear artificially weak in spectral composition.
 RESPONSIVITY_CORRECTION = [
-    2.0,   # F1 (415nm) - least sensitive, needs 2x boost
+    2.0,   # F1 (415nm)
     1.67,  # F2 (445nm)
     1.33,  # F3 (480nm)
     1.11,  # F4 (515nm)
-    1.0,   # F5 (555nm) - reference, most sensitive (green peak, matches human eye sensitivity)
+    1.0,   # F5 (555nm) — reference
     1.11,  # F6 (590nm)
     1.43,  # F7 (630nm)
-    2.0,   # F8 (680nm) - least sensitive, needs 2x boost
+    2.0,   # F8 (680nm)
 ]
+# NIR (~910nm) cannot be calibrated against the C-7000 (380–780nm range), so it
+# stays at a datasheet-derived default unless the user provides a value via the
+# `nir` key in as7341_responsivity.json. 2.5 is a conservative AS7341 typical;
+# accept anything within reason as user-supplied override.
+NIR_RESPONSIVITY_CORRECTION = 2.5
+
+# Override with empirical values if available (generated by as7341_calibrate.py Phase 2)
+_resp_file = BASE_DIR / "as7341_responsivity.json"
+if _resp_file.exists():
+    _resp = json.load(open(_resp_file))
+    RESPONSIVITY_CORRECTION = [float(_resp["corrections"][b]) for b in BANDS9[:8]]
+    if "nir" in _resp.get("corrections", {}):
+        NIR_RESPONSIVITY_CORRECTION = float(_resp["corrections"]["nir"])
+    print(f"[INFO] Empirical responsivity loaded from {_resp_file.name} "
+          f"(NIR corr={'override' if 'nir' in _resp.get('corrections', {}) else 'default'} "
+          f"= {NIR_RESPONSIVITY_CORRECTION})")
 
 # Minimum signal threshold for valid spectrum (BasicCounts units)
 # BasicCounts = (raw - dark) / (gain × integration_time_ms)
@@ -248,18 +299,55 @@ def current_gain_mult(s:AS7341)->float:
     """
     return float(GAIN_MULT.get(s.gain, 1.0))
 
+def apply_sensitivity(s:AS7341, preset:dict)->dict:
+    """
+    Apply a sensitivity preset to the sensor and reload all derived calibration state.
+
+    Called at startup (initial preset) and whenever the auto-sensitivity logic switches
+    between HI and LO. Returns a dict with all values that main() needs to update.
+    """
+    atime, astep = ms_to_atime_astep(preset["integration_time_ms"])
+    s.atime = atime
+    s.astep = astep
+    s.gain  = preset["gain"]
+    it_ms   = integration_time_ms(atime, astep)
+    fs      = adc_fullscale(atime, astep)
+    gnum    = current_gain_mult(s)
+
+    darkJ    = load_dark(preset["dark_file"])
+    meta_ok  = dark_ok_for_settings(darkJ.get("meta"), str(s.gain), atime, astep)
+    if not meta_ok and darkJ.get("meta") is not None:
+        print(f"[WARN] Dark meta mismatch for {preset['dark_file'].name} — dark offsets inactive.")
+    dark_vis8  = [int(darkJ[b]) if meta_ok else 0 for b in VIS8]
+    dark_clear = int(darkJ["clear"]) if meta_ok else 0
+    dark_nir   = int(darkJ.get("nir", 0)) if meta_ok else 0
+
+    b0, w, cal_meta = load_cal(preset["cal_file"])
+    if cal_meta is not None and not dark_ok_for_settings(cal_meta, str(s.gain), atime, astep):
+        print(f"[WARN] Lux cal meta mismatch for {preset['cal_file'].name} "
+              f"(file gain={cal_meta.get('gain')!r}, atime={cal_meta.get('atime')}, "
+              f"astep={cal_meta.get('astep')}; current gain={s.gain}, atime={atime}, astep={astep}).")
+
+    return {
+        "atime": atime, "astep": astep,
+        "it_ms": it_ms, "fs": fs, "gnum": gnum,
+        "dark_vis8": dark_vis8, "dark_clear": dark_clear, "dark_nir": dark_nir,
+        "b0": b0, "w": w,
+    }
+
 def load_cal(path:Path):
     """
     Load lux calibration coefficients from JSON file.
 
-    Expected format: {"b0": float, "w": [8 floats]}
+    Expected format: {"b0": float, "w": [8 floats], "meta": {...}}
     Model: lux = b0 + sum(w[i] * BasicCounts[i])
 
     Args:
         path: Path to calibration JSON file
 
     Returns:
-        tuple: (b0, w) where b0 is intercept and w is list of 8 weights
+        tuple: (b0, w, meta) where b0 is intercept, w is list of 8 weights,
+            and meta is the metadata dict (or None if missing).
 
     Raises:
         FileNotFoundError: If calibration file doesn't exist
@@ -271,7 +359,7 @@ def load_cal(path:Path):
         J = json.load(f)
     b0 = float(J["b0"]); w = [float(x) for x in J["w"]]
     if len(w)!=8: raise ValueError("Calibration file must contain 8 weights (w).")
-    return b0, w
+    return b0, w, J.get("meta")
 
 def load_dark(path:Path):
     """
@@ -633,38 +721,28 @@ def main():
     # ========================================
     i2c = board.I2C()                          # Initialize I2C bus
     s = AS7341(i2c)                            # Create sensor object at default address 0x39
-    
-    # Convert user-friendly integration time to register values
-    atime, astep = ms_to_atime_astep(INTEGRATION_TIME_MS)
-    s.atime = atime
-    s.astep = astep
-    s.gain = GAIN
-    
+
     try:
         s.flicker_detection_enabled = False    # Disable flicker detection for consistent timing
     except Exception:
         pass                                   # Ignore if not supported by driver version
 
-    # Calculate actual integration time (may differ slightly from requested)
-    actual_it_ms = integration_time_ms(atime, astep)
-    fs = adc_fullscale(atime, astep)
-    gnum = current_gain_mult(s)
-
     # ========================================
-    # INITIALIZATION: Calibration Files
+    # INITIALIZATION: Calibration Files + Sensor Settings
     # ========================================
-    # Load dark offset calibration (sensor thermal noise baseline)
-    darkJ = load_dark(DARK_FILE)
-    dark_meta_ok = dark_ok_for_settings(darkJ.get("meta", None), str(s.gain), int(s.atime), int(s.astep))
-    if not dark_meta_ok and darkJ.get("meta", None) is not None:
-        print("[WARN] Dark file meta does not match current settings (gain/ATIME/ASTEP). Skipping dark offsets.")
-    # Extract dark offsets for each channel (only use if settings match)
-    dark_vis8 = [int(darkJ[b]) if dark_meta_ok else 0 for b in VIS8]
-    dark_clear = int(darkJ["clear"]) if dark_meta_ok else 0
-    dark_nir   = int(darkJ.get("nir", 0)) if dark_meta_ok else 0
-
-    # Load lux calibration model: lux = b0 + sum(w[i] * BasicCounts[i])
-    b0, w = load_cal(CAL_FILE)
+    # Start in HI sensitivity (dim-light mode); autorange will step down if needed.
+    active_preset = "hi"
+    sens_cfg      = apply_sensitivity(s, SENS_HI)
+    atime         = sens_cfg["atime"]
+    astep         = sens_cfg["astep"]
+    actual_it_ms  = sens_cfg["it_ms"]
+    fs            = sens_cfg["fs"]
+    gnum          = sens_cfg["gnum"]
+    dark_vis8     = sens_cfg["dark_vis8"]
+    dark_clear    = sens_cfg["dark_clear"]
+    dark_nir      = sens_cfg["dark_nir"]
+    b0, w         = sens_cfg["b0"], sens_cfg["w"]
+    ar_hi_cnt = ar_lo_cnt = 0                  # Hysteresis counters for sensitivity switching
 
     # ========================================
     # INITIALIZATION: InfluxDB Connections
@@ -715,14 +793,15 @@ def main():
     # ========================================
     # STARTUP: Print Configuration Summary
     # ========================================
-    print("AS7341 -> Influx v1 fan-out (SIMPLIFIED CONFIG + SPECTRAL ACCURACY):")
+    print("AS7341 -> Influx v1 fan-out:")
     for ent in sessions: print("  -", ent["label"])
-    print(f"Start: Device={DEVICE}, gain={s.gain}, IT={actual_it_ms:.1f}ms (requested {INTEGRATION_TIME_MS}ms), AVG={AVG}, PERIOD={PERIOD}s")
-    print(f"Registers: ATIME={atime}, ASTEP={astep}, ADC_FS={fs}")
-    print(f"Optimizations: parallel writes, retry budget={RETRY_BUDGET_PER_LOOP}")
-    print(f"Spectral improvements: responsivity correction, VIS8 normalized separately from NIR, min threshold={MIN_SIGNAL_THRESHOLD}")
-    print(f"Offline buffer: CSV out dir={CSV_OUT_DIR} (10-min tmp files in {CSV_TMP_DIR.name}/, daily aggregates in parent)")
-    if not dark_meta_ok: print("[INFO] Dark offsets inactive (no file or meta mismatch).")
+    print(f"Device={DEVICE}, AVG={AVG}, PERIOD={PERIOD}s")
+    print(f"Sensitivity HI: gain={SENS_HI['gain']}, IT={SENS_HI['integration_time_ms']}ms | "
+          f"LO: gain={SENS_LO['gain']}, IT={SENS_LO['integration_time_ms']}ms")
+    print(f"Autorange: {'ON' if AUTORANGE_ENABLE else 'OFF'}, hyst={AUTORANGE_HYST}, "
+          f"sat_frac={AUTORANGE_SAT_FRAC}, low_frac={AUTORANGE_LOW_FRAC}")
+    print(f"Starting in HI sensitivity: ATIME={atime}, ASTEP={astep}, IT={actual_it_ms:.1f}ms, ADC_FS={fs}")
+    print(f"Offline buffer: {CSV_OUT_DIR}")
 
     sample_idx = 0                # Sample counter for logging
 
@@ -736,6 +815,31 @@ def main():
             # -------- Step 1: Read Sensor --------
             # Average AVG frames to reduce noise
             vis_raw, clear_raw, nir_raw = avg_frames(s, AVG)
+
+            # -------- Auto-Sensitivity Switch --------
+            if AUTORANGE_ENABLE:
+                peak_raw = max(vis_raw + [nir_raw, clear_raw])
+                if peak_raw >= AUTORANGE_SAT_FRAC * fs:
+                    ar_hi_cnt += 1; ar_lo_cnt = 0
+                elif peak_raw <= AUTORANGE_LOW_FRAC * fs:
+                    ar_lo_cnt += 1; ar_hi_cnt = 0
+                else:
+                    ar_hi_cnt = ar_lo_cnt = 0
+
+                switched = False
+                if ar_hi_cnt >= AUTORANGE_HYST and active_preset != "lo":
+                    sens_cfg = apply_sensitivity(s, SENS_LO)
+                    active_preset = "lo"; ar_hi_cnt = 0; switched = True
+                elif ar_lo_cnt >= AUTORANGE_HYST and active_preset != "hi":
+                    sens_cfg = apply_sensitivity(s, SENS_HI)
+                    active_preset = "hi"; ar_lo_cnt = 0; switched = True
+
+                if switched:
+                    actual_it_ms = sens_cfg["it_ms"]; fs = sens_cfg["fs"]; gnum = sens_cfg["gnum"]
+                    dark_vis8 = sens_cfg["dark_vis8"]; dark_clear = sens_cfg["dark_clear"]
+                    dark_nir  = sens_cfg["dark_nir"];  b0, w = sens_cfg["b0"], sens_cfg["w"]
+                    print(f"[SENS] -> {active_preset.upper()} (gain={s.gain}, IT={actual_it_ms:.1f}ms)")
+                    continue  # discard frame taken under old settings
 
             # Check for saturation and warn user
             sat_th = SAT_WARN_FRAC * fs
@@ -759,26 +863,26 @@ def main():
             lux   = max(0.0, b0 + sum(bc8[i]*w[i] for i in range(8)))
 
             # ============================================================
-            # SPECTRAL COMPOSITION (IMPROVED ACCURACY)
+            # SPECTRAL COMPOSITION
             # ============================================================
-            # Apply responsivity correction to VIS8 channels
-            # This corrects for the fact that different channels have different sensitivities
+            # Apply responsivity correction to VIS8 and NIR. After correction,
+            # equal true irradiance produces equal contributions across channels,
+            # so the sum/ratio comparisons below are radiometric.
             bc8_corrected = [bc * corr for bc, corr in zip(bc8, RESPONSIVITY_CORRECTION)]
-            
-            # Calculate sum of corrected VIS8 (exclude NIR from visible spectrum)
+            bcnir_corrected = bcnir * NIR_RESPONSIVITY_CORRECTION
+
             sum_vis = sum(bc8_corrected)
-            
-            # Normalize VIS8 to relative intensities (sum to 1.0)
-            # Only report if signal is above noise threshold
+
+            # Normalise VIS8 to relative intensities (sum to 1.0); below threshold
+            # the spectrum is mostly noise, so report zeros instead of garbage.
             if sum_vis >= MIN_SIGNAL_THRESHOLD:
                 rel_vis8 = [max(0.0, x) / sum_vis for x in bc8_corrected]
             else:
-                rel_vis8 = [0.0] * 8  # Signal too weak - report zeros
-            
-            # NIR as fraction of total energy (VIS + NIR)
-            # This separates NIR from visible spectrum composition
-            total_energy = sum_vis + bcnir
-            rel_nir = bcnir / total_energy if total_energy > MIN_SIGNAL_THRESHOLD else 0.0
+                rel_vis8 = [0.0] * 8
+
+            # NIR as fraction of corrected VIS+NIR energy.
+            total_energy = sum_vis + bcnir_corrected
+            rel_nir = bcnir_corrected / total_energy if total_energy > MIN_SIGNAL_THRESHOLD else 0.0
 
             # -------- Build payload --------
             ts = time.time_ns()
@@ -813,15 +917,27 @@ def main():
 
             # Collect results
             any_success = False
-            for future in as_completed(futures, timeout=max(TIMEOUT_CURRENT)*1.2):
-                label, success, error = future.result()
-                if success:
-                    metrics["http_successes"][label] += 1
-                    any_success = True
-                else:
-                    metrics["http_failures"][label] += 1
-                    retry_qs[label].append(payload)
-                    print(f"[ERR] {label}: {error}")
+            ac_timeout = max(TIMEOUT_CURRENT) * 1.2
+            try:
+                for future in as_completed(futures, timeout=ac_timeout):
+                    label, success, error = future.result()
+                    if success:
+                        metrics["http_successes"][label] += 1
+                        any_success = True
+                    else:
+                        metrics["http_failures"][label] += 1
+                        retry_qs[label].append(payload)
+                        print(f"[ERR] {label}: {error}")
+            except FuturesTimeoutError:
+                # All endpoints exceeded the wall-clock budget — treat as failure,
+                # cancel pending futures, and queue the payload for retry on each.
+                print(f"[ERR] All endpoints timed out after {ac_timeout:.1f}s; queueing for retry.")
+                for fut, ent in zip(futures, sessions):
+                    if not fut.done():
+                        fut.cancel()
+                        label = ent["label"]
+                        metrics["http_failures"][label] += 1
+                        retry_qs[label].append(payload)
 
             # CSV fallback when all endpoints fail (archive-only, no replay)
             if not any_success:
@@ -847,7 +963,7 @@ def main():
                 else:
                     # Show signal strength indicator
                     sig_status = "OK" if sum_vis >= MIN_SIGNAL_THRESHOLD else "LOW"
-                    print(f"{log_time_str} lux={lux:.1f} maxVISNIR={int(max(vis+[nir]))} clear={int(clear)} sig={sig_status} gain={s.gain} IT={actual_it_ms:.0f}ms")
+                    print(f"{log_time_str} lux={lux:.1f} maxVISNIR={int(max(vis+[nir]))} clear={int(clear)} sig={sig_status} sens={active_preset} gain={s.gain} IT={actual_it_ms:.0f}ms")
 
             # Periodic stats
             if sample_idx % 100 == 0:
@@ -862,7 +978,7 @@ def main():
             metrics["loop_times"].append(loop_elapsed)
             
             min_period = max(0.02, (actual_it_ms/1000.0) * AVG + 0.02)
-            sleep_time = max(PERIOD, min_period - loop_elapsed, 0.0)
+            sleep_time = max(0.0, max(PERIOD, min_period) - loop_elapsed)
             time.sleep(sleep_time)
 
     except KeyboardInterrupt:

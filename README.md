@@ -1,81 +1,70 @@
-# Raspberry Pi with Adafruit AS7341 Spectral Publisher to InfluxDB
+# Raspberry Pi AS7341 Spectral Light Meter → InfluxDB
 
-Publishes **calibrated lux** and **relative spectral composition** across 9 bands (415–680 nm visible + ~910 nm NIR) to InfluxDB for visualization in Grafana.
+Publishes calibrated **lux** and **relative spectral composition** across
+9 bands (415–680 nm visible + ~910 nm NIR) from a Raspberry Pi to InfluxDB,
+suitable for Grafana dashboarding and field measurements.
+
+The codebase is centered on two scripts:
+
+- `src/as7341_influx_nir.py` — the measurement service (run continuously by systemd).
+- `src/as7341_calibrate.py` — the guided 3-phase calibration tool.
+
+A short functional spec lives in [FSD.md](FSD.md).
 
 ## Features
 
-- **Spectral accuracy improvements**: Responsivity correction, VIS8 normalized separately from NIR, minimum signal threshold
-- **Performance optimizations**: Parallel HTTP writes, retry queue with budget-based flushing, cached calculations
-- **Dark offset correction**: Temperature-compensated dark frame subtraction
-- **Lux calibration**: Linear regression model with optional ridge regularization and K-fold cross-validation
-- **Auto-ranging** (optional): Automatic gain adjustment to optimize dynamic range
-- **Multi-endpoint support**: Parallel writes to multiple InfluxDB instances with retry queues
+- Two-preset auto-sensitivity (HI: gain ×256 / 50 ms for dim, LO: gain ×16 /
+  10 ms for bright) with hysteresis to avoid flapping.
+- Per-preset dark calibration and per-preset VIS8 lux calibration.
+- Guided 3-phase calibration script that walks through dark, spectral
+  responsivity, and lux against a Seconic C-7000 + CoolLED pE-4000.
+- Multi-endpoint InfluxDB fan-out with parallel writes, per-endpoint retry
+  queues, and a CSV archive fallback for prolonged outages.
+- `.env`-driven configuration so the script does not need editing per device.
 
-## Hardware Requirements
+## Hardware
 
-- Raspberry Pi (any model with I²C support)
-- Adafruit AS7341 10-channel spectral sensor (I²C address 0x39)
-- Cosine (diffuser) recommended for accurate lux measurements
+- Raspberry Pi (any model with I²C).
+- Adafruit AS7341 10-channel spectral sensor (I²C @ 0x39).
+- Cosine diffuser dome (recommended for accurate lux).
+- Light-tight cap for dark-frame capture.
 
-## Software Requirements (Not Included)
+## Software prerequisites
 
-- InfluxDB v1.x
-- Grafana (optional, for visualization)
+- Raspberry Pi OS with I²C enabled.
+- Python 3.11+ in a virtualenv.
+- An InfluxDB v1.x endpoint accepting line protocol on `/write`.
 
 ---
 
 ## Installation
 
-### 1. Prerequisites (One-Time Setup)
-
-Install required system packages and enable I²C:
+### 1. System packages and I²C
 
 ```bash
 sudo apt update
 sudo apt install -y python3-full python3-venv git i2c-tools python3-libgpiod
-```
-
-Enable I²C interface:
-```bash
-sudo raspi-config
-# Navigate to: Interface Options → I2C → Enable
-```
-
-Add your user to the `i2c` group:
-```bash
+sudo raspi-config        # Interface Options → I2C → Enable
 sudo adduser $USER i2c
-```
-
-**Reboot** to apply changes:
-```bash
 sudo reboot
 ```
 
-Verify the AS7341 sensor is detected:
-```bash
-i2cdetect -y 1
-```
-You should see `39` in the output grid (I²C address 0x39).
+Verify the sensor:
 
-### 2. Clone Repository
+```bash
+i2cdetect -y 1           # expect address 0x39 in the grid
+```
+
+### 2. Clone and install
 
 ```bash
 cd ~
 git clone https://github.com/fredrik-markussen/as7341-RPi-lightmeter.git
 cd as7341-RPi-lightmeter
-```
-
-### 3. Create Virtual Environment
-
-```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip wheel setuptools
 pip install -r requirements.txt
-```
-
-Verify the driver installation:
-```bash
 python3 -c "import adafruit_as7341; print('AS7341 driver OK')"
 ```
 
@@ -83,236 +72,193 @@ python3 -c "import adafruit_as7341; print('AS7341 driver OK')"
 
 ## Configuration
 
-### 4. Edit Main Script Settings
+All runtime configuration lives in a `.env` file at the project root. Copy the
+sample and edit:
 
-Open [src/as7341_influx_nir.py](src/as7341_influx_nir.py) and configure:
-
-```python
-# Device identification (CHANGE THIS for each Pi)
-DEVICE = "RPi-1"         # Unique name for this device
-MEAS   = "LIGHT"         # InfluxDB measurement name
-
-# Sensor settings (must match calibration settings)
-ATIME_D = 15             # Integration time parameter (0-255)
-ASTEP_D = 999            # Integration steps (0-65534)
-GAIN_D  = Gain.GAIN_256X # Gain setting
-
-# Measurement settings
-AVG     = 5              # Frames to average per reading
-PERIOD  = 60.0           # Seconds between measurements
-
-# InfluxDB endpoints (can specify multiple for redundancy)
-ENDPOINTS = [
-    ("10.239.99.73", 8086, "AAB"),  # (host, port, database)
-]
-
-# Optional: Enable auto-ranging
-AUTORANGE_ENABLE = False  # Set to True to enable automatic gain adjustment
+```bash
+cp config/sample.env .env
+$EDITOR .env
 ```
 
-**Important**: The sensor settings (`ATIME_D`, `ASTEP_D`, `GAIN_D`) must match those used during calibration (steps 5 & 6).
+Keys you typically want to set:
+
+| Key                  | Meaning |
+|----------------------|---------|
+| `DEVICE`             | Tag value used in InfluxDB (`Device=...`); make it unique per Pi. |
+| `INFLUX_ENDPOINTS`   | JSON array of `[host, port, database]` triples. Multiple endpoints write in parallel. |
+| `AVG`                | Frames averaged per measurement (5 is a good default). |
+| `PERIOD`             | Seconds between measurements. |
+| `AUTORANGE_*`        | HI/LO switching thresholds and hysteresis count. |
+| `SENS_HI_*`, `SENS_LO_*` | Override gain / integration time for either preset. |
+
+See `config/sample.env` for the full list. Anything not set in `.env` falls
+back to the defaults at the top of `src/as7341_influx_nir.py`.
 
 ---
 
-## Calibration (Required)
+## Calibration (required before first run)
 
-Calibration generates two files that correct for sensor-specific characteristics:
+Calibration generates per-preset JSON files in the project root. The
+measurement script will not start until at least the HI lux cal file exists.
 
-### 5. Dark Offset Calibration
+Run the guided script with the sensor and reference instruments connected:
 
-Captures dark current offsets when the sensor is in complete darkness.
-
-**Preparation**:
-- Cover the sensor completely with an opaque cap or thick tape
-- Turn off all lights in the room
-- Or use your finger to cover the sensor
-
-**Before running**, verify the settings in [src/as7341_dark_capture.py](src/as7341_dark_capture.py) match your main script:
-
-```python
-ATIME_D = 99              # Must match as7341_influx_nir.py
-ASTEP_D = 999             # Must match as7341_influx_nir.py
-GAIN_D  = Gain.GAIN_64X   # Must match as7341_influx_nir.py
-```
-
-Run the calibration:
 ```bash
 source .venv/bin/activate
-python3 src/as7341_dark_capture.py
+python3 src/as7341_calibrate.py
 ```
 
-This creates `as7341_dark.json` in the project root with dark offsets for all 9 channels.
+This walks through three phases:
 
-### 6. Lux Calibration
+### Phase 1 — Dark capture
 
-Builds a linear regression model to convert spectral readings to lux.
+- Sensor covered with an opaque cap, room dark.
+- 100 samples per preset; medians written with full meta (gain, ATIME, ASTEP, timestamp).
+- Outputs: `as7341_dark_hi.json`, `as7341_dark_lo.json`.
 
-**Preparation**:
-- Reference lux meter (smartphone apps work but professional meters are better)
-- 8–10 diverse lighting scenes (daylight, shade, LED, incandescent, different intensities)
-- Place sensor and lux meter side-by-side, facing the same direction
+### Phase 2 — Spectral responsivity (VIS8)
 
-Run the calibration:
+- AS7341 + Seconic C-7000 side-by-side under a CoolLED pE-4000.
+- 5 intensity levels by default (10 / 25 / 50 / 75 / 90 %).
+- C-7000 spectral data either pasted from a 2-column CSV
+  (`wavelength_nm, irradiance_W_m2_nm`) or entered manually at the 8 channel
+  wavelengths.
+- Output: `as7341_responsivity.json`. The main script picks it up
+  automatically at startup; without it, datasheet defaults are used.
+- NIR (~910 nm) is **not** measured here — the C-7000 covers 380–780 nm only.
+  The runtime keeps a datasheet default for NIR. To override, edit
+  `as7341_responsivity.json` and add a `nir` key under `corrections`.
+
+### Phase 3 — Lux model
+
+- AS7341 + C-7000 side-by-side, same angle, no shadows.
+- Default 12 diverse scenes per preset (≥ 10 needed for a stable fit).
+- VIS8 ridge regression with intercept (α=0.01); MAD outlier rejection;
+  K-fold CV reports goodness-of-fit. `--lux-nnls` constrains weights to be
+  non-negative if the unconstrained fit goes wild.
+- Outputs: `as7341_lux_cal_hi.json`, `as7341_lux_cal_lo.json`.
+
+### Running individual phases
+
+```bash
+python3 src/as7341_calibrate.py --phase dark            # Phase 1 only
+python3 src/as7341_calibrate.py --phase responsivity    # Phase 2 only
+python3 src/as7341_calibrate.py --phase lux             # Phase 3 only
+python3 src/as7341_calibrate.py --phase lux --preset hi # re-run HI lux only
+```
+
+Useful flags for Phase 3:
+
+```
+--lux-scenes 15        # collect more scenes (default 12)
+--lux-ridge 0.0        # plain OLS instead of ridge (only with plenty of scenes)
+--lux-nnls             # constrain weights to be non-negative
+--lux-kfold 5          # K-fold CV folds
+```
+
+The standalone `src/as7341_dark_capture.py` is a smaller utility for ad-hoc
+dark captures with custom settings; it defaults to writing
+`as7341_dark_hi.json`. For the standard workflow, prefer the guided script.
+
+---
+
+## Running
+
+### Foreground
+
 ```bash
 source .venv/bin/activate
-python3 src/as7341_calibrate_lux.py --samples 8 --avg 10
-```
-
-For each scene:
-1. Position sensor and lux meter together
-2. Press Enter to capture spectral data
-3. Enter the lux reading from your reference meter
-4. Move to next lighting scene and repeat
-
-Optional arguments:
-```bash
---gain GAIN_64X          # Gain setting (must match main script)
---atime 99               # ATIME value (must match main script)
---astep 999              # ASTEP value (must match main script)
---samples 8              # Number of calibration scenes
---avg 10                 # Captures per scene (median aggregated)
---ridge 0.01             # L2 regularization (reduces overfitting)
---kfold 5                # K-fold cross-validation
---nnls-lite              # Enforce non-negative coefficients
-```
-
-This creates `as7341_lux_cal.json` with calibration coefficients.
-
-**Test the calibration** (optional):
-```bash
-# Run once and check if lux value looks reasonable
 python3 src/as7341_influx_nir.py
-# Press Ctrl+C after a few readings
 ```
 
----
+You should see startup lines listing the endpoints, the active sensitivity
+preset, ATIME/ASTEP, and the offline buffer location, followed by per-sample
+log lines.
 
-## Running as a Service
-
-### 7. Install systemd Service
-
-Copy the service template (note: the template in repo may need path adjustments):
+### As a systemd service
 
 ```bash
 sudo cp systemd/as7341.service /etc/systemd/system/as7341@.service
-```
-
-**Edit the service file** to match your repository path:
-```bash
-sudo nano /etc/systemd/system/as7341@.service
-```
-
-Update the `WorkingDirectory` and `ExecStart` paths:
-```ini
-WorkingDirectory=%h/as7341-RPi-lightmeter
-ExecStart=%h/as7341-RPi-lightmeter/.venv/bin/python %h/as7341-RPi-lightmeter/src/as7341_influx_nir.py
-```
-
-### 8. Enable and Start Service
-
-Replace `<user>` with your Linux username (e.g., `pi`, `admin`):
-
-```bash
 sudo systemctl daemon-reload
-sudo systemctl enable as7341@<user>.service
-sudo systemctl start as7341@<user>.service
+sudo systemctl enable --now as7341@$USER.service
+journalctl -u as7341@$USER.service -f
 ```
 
-Check service status:
-```bash
-sudo systemctl status as7341@<user>.service
-```
+The unit assumes the repo lives at `~/as7341-RPi-lightmeter` with a `.venv`
+directory. Edit `WorkingDirectory` / `ExecStart` if your layout differs.
 
-View real-time logs:
-```bash
-journalctl -u as7341@<user>.service -f
-```
+---
 
-Restart after configuration changes:
+## Data model
+
+**Spectral composition** — measurement `LIGHT`, 9 points per cycle:
+
+- Tags: `Device=<DEVICE>`, `wavelength_nm=415|445|480|515|555|590|630|680|910`.
+- Field: `rel_intensity` (VIS8 sums to 1.0; the NIR point is the
+  fraction of corrected VIS+NIR energy).
+
+**Lux** — measurement `LIGHT_LUX`, 1 point per cycle:
+
+- Tags: `Device=<DEVICE>`, `method=lin_basic`.
+- Fields: `lux` (calibrated), `clear` (raw CLEAR channel).
+
+Quick sanity query:
+
 ```bash
-sudo systemctl restart as7341@<user>.service
+curl -G http://<INFLUX_HOST>:8086/query \
+  --data-urlencode "db=AAB" \
+  --data-urlencode "q=SELECT * FROM LIGHT_LUX WHERE Device='RPi-1' ORDER BY time DESC LIMIT 5"
 ```
 
 ---
 
-## Verification
+## Offline buffering
 
-### Check InfluxDB Measurements
+Failed writes go into per-endpoint in-memory retry queues (bounded by
+`MAX_RETRY_QUEUE`, default 500) and replay when the endpoint recovers.
 
-List all measurements in the database:
-```bash
-curl -G http://<INFLUX_HOST>:8086/query \
-  --data-urlencode "db=AAB" \
-  --data-urlencode "q=SHOW MEASUREMENTS"
-```
-
-Query recent data for your device:
-```bash
-curl -G http://<INFLUX_HOST>:8086/query \
-  --data-urlencode "db=AAB" \
-  --data-urlencode "q=SELECT * FROM LIGHT WHERE Device='RPi-1' ORDER BY time DESC LIMIT 5"
-```
-
-### Data Structure in InfluxDB
-
-**Spectral composition** (9 points per reading):
-- **Measurement**: `LIGHT`
-- **Tags**: `Device=RPi-1`, `wavelength_nm=415|445|480|515|555|590|630|680|910`
-- **Field**: `rel_intensity` (normalized, VIS8 sum to 1.0; NIR as fraction of total)
-
-**Lux measurement**:
-- **Measurement**: `LIGHT_LUX`
-- **Tags**: `Device=RPi-1`, `method=lin_basic`
-- **Fields**: `lux` (calibrated), `clear` (raw CLEAR channel value)
+If **every** endpoint fails on a given sample, the row is also appended to a
+10-minute tmp CSV in `~/Documents/Lightmeter_csv_out/daily_tmp/`. Tmp files
+are merged into per-day aggregates in the parent directory; on startup, any
+leftover tmps from a previous run are merged. The CSV is archive-only — it
+is not automatically replayed to InfluxDB. For a prolonged outage that
+exceeds the retry queue, import the daily CSVs manually after recovery.
 
 ---
 
 ## Troubleshooting
 
-### Sensor Not Detected
+**Sensor not detected**
 ```bash
-# Check I²C is enabled
-sudo raspi-config
-
-# Verify user is in i2c group
-groups $USER
-
-# Check sensor address
-i2cdetect -y 1
+groups $USER          # need 'i2c'
+i2cdetect -y 1        # expect 0x39
 ```
 
-### Dark/Calibration Files Not Found
-```bash
-# Ensure files exist in project root
-ls -la ~/as7341-RPi-lightmeter/*.json
+**Script aborts at startup with `FileNotFoundError: as7341_lux_cal_hi.json`**
+Run `python3 src/as7341_calibrate.py --phase lux --preset hi` to generate it.
 
-# Check file paths in main script
-grep "DARK_FILE\|CAL_FILE" src/as7341_influx_nir.py
-```
+**Saturation warnings on every sample**
+The active preset is overexposed. With autorange on, the script will drop to
+LO automatically after `AUTORANGE_HYST` consecutive saturated frames. If LO
+also saturates, lower `SENS_LO_IT_MS` or `SENS_LO_GAIN`.
 
-### Saturation Warnings
-```
-[WARN] Near saturation: max=65000
-```
-- Lower the gain in [src/as7341_influx_nir.py](src/as7341_influx_nir.py) (e.g., `GAIN_256X` → `GAIN_64X`)
-- Or reduce `ATIME_D` or `ASTEP_D`
-- Recalibrate dark and lux after changing settings
+**`[WARN] Lux cal meta mismatch`**
+The cal file was generated under different gain/ATIME/ASTEP than the active
+preset. Either update the preset to match, or re-run the cal phase for that
+preset.
 
-### InfluxDB Connection Errors
-```
-[ERR] 10.239.99.73:8086/AAB: Connection refused
-```
-- Verify InfluxDB is running: `systemctl status influxdb`
-- Check firewall rules
-- Verify database exists: `influx -execute "SHOW DATABASES"`
+**InfluxDB connection errors**
+- Verify InfluxDB is up: `systemctl status influxdb`.
+- Confirm the database exists: `influx -execute "SHOW DATABASES"`.
+- The script keeps retrying in the background; check
+  `journalctl -u as7341@$USER.service` for the retry queue size.
 
 ---
 
-## Additional Information
+## Reference
 
-- **Integration time**: Calculated as `(ATIME + 1) × (ASTEP + 1) × 2.78 µs`
-- **Full-scale ADC**: Max value is `min(65535, (ATIME + 1) × (ASTEP + 1))`
-- **Responsivity correction**: Built-in correction factors account for different channel sensitivities
-- **Retry queue**: Failed HTTP writes are queued (max 500) and retried on subsequent loops
-
-For Grafana dashboards, query the `LIGHT` measurement with `wavelength_nm` filter for spectral plots, and `LIGHT_LUX` for lux trends.
+- Integration time: `(ATIME + 1) × (ASTEP + 1) × 2.78 µs`.
+- ADC full-scale: `min(65535, (ATIME + 1) × (ASTEP + 1))`.
+- BasicCounts: `(raw - dark) / (gain × integration_time_ms)`. The lux model
+  is fit and applied in this unit so that gain/IT changes between calibration
+  and measurement do not invalidate the model.
