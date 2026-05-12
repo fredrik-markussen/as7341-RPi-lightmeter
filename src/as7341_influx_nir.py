@@ -22,7 +22,7 @@
 #
 # Result: 50-60% faster + much more accurate spectral composition
 
-import time, json, os, csv, datetime, re, subprocess
+import time, json, os, csv, datetime, re, subprocess, shutil
 from pathlib import Path
 from collections import deque, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
@@ -80,9 +80,10 @@ ENDPOINTS = [
 MAX_RETRY_QUEUE = 500         # Maximum failed writes to queue per endpoint before dropping
                               # Prevents memory overflow during extended network outages
 
-CSV_ALWAYS = False            # If True, write a CSV row every cycle regardless of
-                              # InfluxDB success. If False, CSV is only written when
-                              # ALL endpoints fail (true offline-buffer behaviour).
+CSV_ALWAYS = True             # If True, write a CSV row every cycle regardless of
+                              # InfluxDB success (default — guarantees a local record).
+                              # Set False for offline-buffer-only behaviour (CSV written
+                              # only when ALL endpoints fail).
 
 # HTTP Performance Tuning
 # -----------------------
@@ -1072,6 +1073,8 @@ def main():
             # -------- Status snapshot (atomic JSON, headless health check) --------
             try:
                 peak_now = max(vis_raw + [nir_raw, clear_raw])
+                _disk_path = CSV_OUT_DIR if CSV_OUT_DIR.exists() else Path.home()
+                disk_free_mb = round(shutil.disk_usage(str(_disk_path)).free / (1024 ** 2), 1)
                 status = {
                     "device": DEVICE,
                     "process_start_iso": process_start_iso,
@@ -1082,6 +1085,7 @@ def main():
                         "rows_written": metrics["csv_rows_written"],
                         "always_on": CSV_ALWAYS,
                         "out_dir": str(CSV_OUT_DIR),
+                        "disk_free_mb": disk_free_mb,
                     },
                     "last_sample": {
                         "timestamp_iso": _iso_from_ns(ts),

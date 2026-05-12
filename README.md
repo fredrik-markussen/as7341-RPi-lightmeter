@@ -19,7 +19,8 @@ A short functional spec lives in [FSD.md](FSD.md).
 - Guided 3-phase calibration script that walks through dark, spectral
   responsivity, and lux against a Seconic C-7000 + CoolLED pE-4000.
 - Multi-endpoint InfluxDB fan-out with parallel writes, per-endpoint retry
-  queues, and a CSV archive fallback for prolonged outages.
+  queues, and a CSV archive that writes every cycle by default.
+- Optional local InfluxDB 1.8 + Grafana stack for offline / hotspot live view.
 - `.env`-driven configuration so the script does not need editing per device.
 
 ## Hardware
@@ -33,7 +34,7 @@ A short functional spec lives in [FSD.md](FSD.md).
 
 - Raspberry Pi OS with I²C enabled.
 - Python 3.11+ in a virtualenv.
-- An InfluxDB v1.x endpoint accepting line protocol on `/write`.
+- An InfluxDB v1.x endpoint (local or remote) accepting line protocol on `/write`.
 
 ---
 
@@ -70,6 +71,54 @@ python3 -c "import adafruit_as7341; print('AS7341 driver OK')"
 
 ---
 
+## Local stack: InfluxDB + Grafana on the Pi
+
+Running InfluxDB 1.8 and Grafana directly on the Pi means data is recorded
+and viewable without any internet access or remote server — the measurement
+script writes to `127.0.0.1:8086` over the loopback interface even when no
+network is connected.
+
+### Install
+
+```bash
+sudo bash setup/install_local_stack.sh
+```
+
+The script (idempotent, re-runnable):
+- Adds the InfluxData APT repo and installs InfluxDB 1.8.x.
+- Creates the `lightmeter` database with a 90-day retention policy.
+- Adds the Grafana APT repo and installs Grafana.
+- Provisions a `lightmeter` datasource in Grafana pointing at `localhost:8086`.
+- Enables both services so they start automatically after reboot.
+
+### First login
+
+Open `http://<pi-hostname>.local:3000` in a browser (or `http://localhost:3000`
+from the Pi itself). First-login credentials are `admin` / `admin`; Grafana
+will prompt you to change the password.
+
+### Building a dashboard
+
+1. Go to **Dashboards → New → New dashboard**.
+2. Add a panel, select the **lightmeter** datasource (InfluxDB).
+3. Example query for lux over the last hour:
+   ```
+   SELECT mean("lux") FROM "LIGHT_LUX"
+   WHERE $timeFilter
+   GROUP BY time($__interval)
+   ```
+4. For spectral composition: select measurement `LIGHT`, filter by `wavelength_nm` tag.
+
+### Adjusting retention
+
+To keep more or less data than the 90-day default:
+
+```bash
+influx -execute 'ALTER RETENTION POLICY autogen ON lightmeter DURATION 30d REPLICATION 1 DEFAULT'
+```
+
+---
+
 ## Configuration
 
 All runtime configuration lives in a `.env` file at the project root. Copy the
@@ -85,9 +134,10 @@ Keys you typically want to set:
 | Key                  | Meaning |
 |----------------------|---------|
 | `DEVICE`             | Tag value used in InfluxDB (`Device=...`); make it unique per Pi. |
-| `INFLUX_ENDPOINTS`   | JSON array of `[host, port, database]` triples. Multiple endpoints write in parallel. |
+| `INFLUX_ENDPOINTS`   | JSON array of `[host, port, database]` triples. Defaults to localhost only; add remote hosts alongside it. |
 | `AVG`                | Frames averaged per measurement (5 is a good default). |
 | `PERIOD`             | Seconds between measurements. |
+| `CSV_ALWAYS`         | `true` (default) — write a CSV row every cycle. `false` — write only when all Influx endpoints fail. |
 | `AUTORANGE_*`        | HI/LO switching thresholds and hysteresis count. |
 | `SENS_HI_*`, `SENS_LO_*` | Override gain / integration time for either preset. |
 
@@ -216,7 +266,7 @@ directory. Edit `WorkingDirectory` / `ExecStart` if your layout differs.
 - Tags: `Device=<DEVICE>`, `method=lin_basic`.
 - Fields: `lux` (calibrated), `clear` (raw CLEAR channel).
 
-**CSV offline buffer** — same data, 21 columns:
+**CSV archive** — same data, 21 columns:
 
 ```
 timestamp_iso,device,lux,clear,
@@ -231,9 +281,8 @@ the column count stays stable.
 Quick sanity query:
 
 ```bash
-curl -G http://<INFLUX_HOST>:8086/query \
-  --data-urlencode "db=AAB" \
-  --data-urlencode "q=SELECT * FROM LIGHT_LUX WHERE Device='RPi-1' ORDER BY time DESC LIMIT 5"
+influx -database lightmeter \
+  -execute "SELECT * FROM LIGHT_LUX WHERE Device='RPi-1' ORDER BY time DESC LIMIT 5"
 ```
 
 ---
@@ -243,23 +292,20 @@ curl -G http://<INFLUX_HOST>:8086/query \
 Failed Influx writes go into per-endpoint in-memory retry queues (bounded by
 `MAX_RETRY_QUEUE`, default 500) and replay when the endpoint recovers.
 
-The CSV path under `~/Documents/Lightmeter_csv_out/` is written in one of
-two modes, controlled by the `CSV_ALWAYS` setting in `.env`:
+The CSV archive under `~/Documents/Lightmeter_csv_out/` is written in one of
+two modes, controlled by `CSV_ALWAYS` in `.env`:
 
-- **`CSV_ALWAYS=false` (default)** — CSV is written only when **every**
-  Influx endpoint fails on a given sample. True offline-buffer behaviour;
-  CSV is archive-only and not auto-replayed, so for outages exceeding the
-  retry queue, import the daily CSVs manually after recovery.
-- **`CSV_ALWAYS=true`** — a CSV row is written every measurement cycle
-  regardless of Influx success. Useful for field experiments where you
-  want a guaranteed local record alongside the live Influx feed, or when
-  you don't trust the network.
+- **`CSV_ALWAYS=true` (default)** — a CSV row is written every measurement
+  cycle regardless of Influx success. Every sample has a local copy; use this
+  for field deployments where you want a guaranteed record alongside the live
+  Influx feed.
+- **`CSV_ALWAYS=false`** — CSV is written only when **every** Influx endpoint
+  fails on a given sample. True offline-buffer behaviour; for outages
+  exceeding the retry queue, import the daily CSVs manually after recovery.
 
-Either way, rows go into a 10-minute tmp CSV in `daily_tmp/`; tmp files
-are merged into per-day aggregates in the parent directory; on startup,
-any leftover tmps from a previous run are merged. Filenames and row
-timestamps are both UTC, so daily files group by UTC date regardless of
-the Pi's local timezone.
+Rows go into a 10-minute tmp CSV in `daily_tmp/`; tmp files are merged into
+per-day aggregates in the parent directory; on startup, any leftover tmps from
+a previous run are merged. Filenames and row timestamps are both UTC.
 
 ---
 
@@ -270,8 +316,8 @@ Every cycle the runtime atomically writes a small JSON snapshot to
 (lux, spectral composition, irradiance, sensor settings, saturation
 fraction), per-endpoint health (success/failure counters, retry queue
 depth, last-success and last-failure timestamps with the failure message),
-the CSV state, and process uptime. The file is written via tmp+rename so
-a concurrent reader never sees a half-written file.
+the CSV state including `disk_free_mb` for the output filesystem, and
+process uptime.
 
 Quick liveness checks over SSH:
 
@@ -283,13 +329,83 @@ ssh pi@RPi-1 'cat ~/Documents/Lightmeter_csv_out/status.json'
 ssh pi@RPi-1 'jq -r ".last_sample | \"\(.timestamp_iso) lux=\(.lux) sat=\(.saturation_frac) preset=\(.active_preset)\"" \
               ~/Documents/Lightmeter_csv_out/status.json'
 
-# Endpoint health at a glance
-ssh pi@RPi-1 'jq ".endpoints | to_entries[] | {ep: .key, ok: .value.successes, fail: .value.failures, q: .value.retry_queue, last_ok: .value.last_success_iso}" \
-              ~/Documents/Lightmeter_csv_out/status.json'
+# Disk free
+ssh pi@RPi-1 'jq ".csv.disk_free_mb" ~/Documents/Lightmeter_csv_out/status.json'
 ```
 
 If `status.json` is older than a couple of cycles, the process is wedged
 or stopped — `systemctl status as7341@$USER.service` will tell you why.
+
+---
+
+## Storage and retention
+
+With local InfluxDB and per-cycle CSV running continuously, storage management
+matters.
+
+### SD card choice
+
+Use a high-endurance card rated for continuous writes. Good options:
+- **Samsung PRO Endurance** — rated for years of 24/7 video surveillance writes.
+- **SanDisk High Endurance** — similar rating, widely available.
+
+A 64 GB card gives comfortable headroom. For deployments longer than about 6
+months, or if the Pi is mounted somewhere inconvenient to service, booting from
+a USB SSD is more reliable than any SD card.
+
+### Filesystem tweak
+
+Add `noatime` to the rootfs mount in `/etc/fstab` to eliminate access-time
+writes (can halve write traffic on a read-heavy workload):
+
+```
+PARTUUID=xxxxxxxx-02  /  ext4  defaults,noatime  0  1
+```
+
+Edit the existing rootfs line; run `sudo mount -o remount,noatime /` to apply
+without a reboot.
+
+### InfluxDB footprint
+
+At `PERIOD=60` with 10 fields per sample, TSI-compressed storage runs roughly
+5–15 MB/day. The default 90-day retention policy therefore uses about 0.5–1.5 GB.
+Adjust with:
+
+```bash
+influx -execute 'ALTER RETENTION POLICY autogen ON lightmeter DURATION 60d REPLICATION 1 DEFAULT'
+```
+
+InfluxDB enforces the policy automatically — old shards are dropped when they
+age out.
+
+### CSV footprint
+
+| Period  | Rows/day | Uncompressed/day | Uncompressed/year |
+|---------|----------|-----------------|-------------------|
+| 60 s    | ~1 440   | ~250 KB         | ~90 MB            |
+| 10 s    | ~8 640   | ~1.5 MB         | ~550 MB           |
+| 5 s     | ~17 280  | ~3 MB           | ~1.1 GB           |
+
+CSV daily files are not automatically pruned. Add a cron job to clean up old
+ones (adjust the `-mtime` value to taste):
+
+```bash
+crontab -e
+# Keep 180 days of daily CSV files:
+0 3 * * * find ~/Documents/Lightmeter_csv_out -name '*_daily.csv' -mtime +180 -delete
+```
+
+### Out-of-space behaviour
+
+If the filesystem fills up, InfluxDB refuses new writes (the script logs
+`[ERR] <endpoint>: ...`), and the CSV append throws (logged as
+`[ERR] CSV write failed: ...`). The main measurement loop keeps going, so
+data resumes when space is freed. Monitor free space without SSH via the
+`csv.disk_free_mb` field in `status.json`:
+
+```bash
+ssh pi@RPi-1 'jq ".csv.disk_free_mb" ~/Documents/Lightmeter_csv_out/status.json'
+```
 
 ---
 
@@ -303,26 +419,80 @@ stamped with the previous shutdown's time until NTP catches up.
 
 **Recommended pre-deployment routine:**
 
-1. Pre-configure the Pi to auto-connect to a phone hotspot (and optionally
-   your home Wi-Fi). On Raspberry Pi OS Bookworm:
-   ```bash
-   sudo nmcli device wifi connect "<hotspot SSID>" password "<password>"
-   ```
-   Repeat for each network you want it to remember; NetworkManager keeps the
-   profiles and reconnects automatically when in range.
+1. Pre-configure the Pi to auto-connect to a phone hotspot (see
+   [Field operation: hotspot live view](#field-operation-hotspot-live-view) below).
 2. In the field, power up the Pi within range of the configured hotspot.
-3. Verify NTP sync — `timedatectl` should report `NTP service: active` and
-   `System clock synchronized: yes`.
-4. Disconnect the hotspot. The Pi keeps its synced clock for the duration
+3. NTP syncs automatically once the hotspot connection is up.
+4. Verify: `timedatectl` should report `System clock synchronized: yes`.
+5. Disconnect the hotspot. The Pi keeps its synced clock for the duration
    of the experiment as long as it stays powered.
 
 `as7341_influx_nir.py` checks `timedatectl` at startup and prints a warning
-if the clock is unset (year < 2025) or NTP is unsynchronised, so you'll see
-a loud message in `journalctl` rather than discovering bad timestamps later.
+if the clock is unset (year < 2025) or NTP is unsynchronised.
 
 For unattended deployments where you can't guarantee NTP at every power-up,
 add a battery-backed RTC HAT (e.g. DS3231) — Raspberry Pi OS supports it
 out of the box via `dtoverlay=i2c-rtc,ds3231` in `/boot/firmware/config.txt`.
+
+---
+
+## Field operation: hotspot live view
+
+The Pi can serve Grafana to your phone over a hotspot connection with no
+internet or external infrastructure. Data keeps writing to local InfluxDB
+the entire time regardless of hotspot state.
+
+### Pre-configure the hotspot profile
+
+**Raspberry Pi OS Bookworm** (NetworkManager):
+
+```bash
+sudo bash setup/configure_hotspot.sh "<hotspot SSID>" "<password>"
+```
+
+This creates a NetworkManager profile (`lightmeter-hotspot`) that
+auto-connects whenever the named hotspot is in range. The measurement
+service keeps running uninterrupted.
+
+Optional — fix the Pi's IP on the hotspot subnet so your phone always
+reaches it at the same address:
+
+```bash
+# Android hotspot subnets are typically 192.168.43.x
+sudo bash setup/configure_hotspot.sh "<SSID>" "<password>" --static-ip 192.168.43.50/24
+
+# iPhone hotspot subnets are typically 172.20.10.x
+sudo bash setup/configure_hotspot.sh "<SSID>" "<password>" --static-ip 172.20.10.5/28
+```
+
+**Raspberry Pi OS Bullseye / Buster** (wpa_supplicant):
+
+Add a network block to `/etc/wpa_supplicant/wpa_supplicant.conf`:
+
+```
+network={
+    ssid="<hotspot SSID>"
+    psk="<password>"
+    priority=50
+}
+```
+
+Then `sudo wpa_cli -i wlan0 reconfigure`.
+
+### Connecting
+
+1. Enable the hotspot on your phone.
+2. Power up (or leave powered on) the Pi — it auto-connects within ~30 s.
+3. Open a browser on your phone:
+   - `http://<pi-hostname>.local:3000` — mDNS (works out of the box on iOS;
+     newer Android versions also support it via `.local` resolution).
+   - `http://<static-ip>:3000` — use the static IP if `.local` doesn't
+     resolve (common on older Android).
+
+The Pi's hostname is shown by `hostname` on the Pi, or set it with
+`sudo raspi-config` → System Options → Hostname.
+
+Grafana login: `admin` / `admin` on first use (you'll be prompted to change it).
 
 ---
 
@@ -358,6 +528,11 @@ The Pi has no RTC and hasn't reached an NTP server. See
 [Field operation: clock sync without RTC](#field-operation-clock-sync-without-rtc)
 above. Bring up a network with internet access (phone hotspot is the
 simplest option) and wait for sync, or fit a DS3231 RTC HAT.
+
+**Disk full — CSV and InfluxDB writes failing**
+Check free space: `jq ".csv.disk_free_mb" ~/Documents/Lightmeter_csv_out/status.json`.
+Delete old daily CSV files or reduce `INFLUX_ENDPOINTS` retention. See
+[Storage and retention](#storage-and-retention).
 
 ---
 
