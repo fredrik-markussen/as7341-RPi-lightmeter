@@ -4,7 +4,7 @@ Publishes calibrated **lux** and **relative spectral composition** across
 9 bands (415–680 nm visible + ~910 nm NIR) from a Raspberry Pi to InfluxDB,
 suitable for Grafana dashboarding and field measurements.
 
-The codebase is centered on two scripts:
+Two scripts do most of the work:
 
 - `src/as7341_influx_nir.py` — the measurement service (run continuously by systemd).
 - `src/as7341_calibrate.py` — the guided 3-phase calibration tool.
@@ -67,54 +67,6 @@ source .venv/bin/activate
 pip install --upgrade pip wheel setuptools
 pip install -r requirements.txt
 python3 -c "import adafruit_as7341; print('AS7341 driver OK')"
-```
-
----
-
-## Local stack: InfluxDB + Grafana on the Pi
-
-Running InfluxDB 1.8 and Grafana directly on the Pi means data is recorded
-and viewable without any internet access or remote server — the measurement
-script writes to `127.0.0.1:8086` over the loopback interface even when no
-network is connected.
-
-### Install
-
-```bash
-sudo bash setup/install_local_stack.sh
-```
-
-The script (idempotent, re-runnable):
-- Adds the InfluxData APT repo and installs InfluxDB 1.8.x.
-- Creates the `lightmeter` database with a 90-day retention policy.
-- Adds the Grafana APT repo and installs Grafana.
-- Provisions a `lightmeter` datasource in Grafana pointing at `localhost:8086`.
-- Enables both services so they start automatically after reboot.
-
-### First login
-
-Open `http://<pi-hostname>.local:3000` in a browser (or `http://localhost:3000`
-from the Pi itself). First-login credentials are `admin` / `admin`; Grafana
-will prompt you to change the password.
-
-### Building a dashboard
-
-1. Go to **Dashboards → New → New dashboard**.
-2. Add a panel, select the **lightmeter** datasource (InfluxDB).
-3. Example query for lux over the last hour:
-   ```
-   SELECT mean("lux") FROM "LIGHT_LUX"
-   WHERE $timeFilter
-   GROUP BY time($__interval)
-   ```
-4. For spectral composition: select measurement `LIGHT`, filter by `wavelength_nm` tag.
-
-### Adjusting retention
-
-To keep more or less data than the 90-day default:
-
-```bash
-influx -execute 'ALTER RETENTION POLICY autogen ON lightmeter DURATION 30d REPLICATION 1 DEFAULT'
 ```
 
 ---
@@ -245,6 +197,54 @@ journalctl -u as7341@$USER.service -f
 
 The unit assumes the repo lives at `~/as7341-RPi-lightmeter` with a `.venv`
 directory. Edit `WorkingDirectory` / `ExecStart` if your layout differs.
+
+---
+
+## Local stack: InfluxDB + Grafana on the Pi
+
+Running InfluxDB 1.8 and Grafana directly on the Pi means data is recorded
+and viewable without internet access. The measurement script writes to
+`127.0.0.1:8086` over the loopback, so it keeps going even when there's no
+network.
+
+### Install
+
+```bash
+sudo bash setup/install_local_stack.sh
+```
+
+The script (idempotent, re-runnable):
+- Adds the InfluxData APT repo and installs InfluxDB 1.8.x.
+- Creates the `lightmeter` database with a 90-day retention policy.
+- Adds the Grafana APT repo and installs Grafana.
+- Provisions a `lightmeter` datasource in Grafana pointing at `localhost:8086`.
+- Enables both services so they start automatically after reboot.
+
+### First login
+
+Open `http://<pi-hostname>.local:3000` in a browser (or `http://localhost:3000`
+from the Pi itself). First-login credentials are `admin` / `admin`; Grafana
+will prompt you to change the password.
+
+### Building a dashboard
+
+1. Go to **Dashboards → New → New dashboard**.
+2. Add a panel, select the **lightmeter** datasource (InfluxDB).
+3. Example query for lux over the last hour:
+   ```
+   SELECT mean("lux") FROM "LIGHT_LUX"
+   WHERE $timeFilter
+   GROUP BY time($__interval)
+   ```
+4. For spectral composition: select measurement `LIGHT`, filter by `wavelength_nm` tag.
+
+### Adjusting retention
+
+To keep more or less data than the 90-day default:
+
+```bash
+influx -execute 'ALTER RETENTION POLICY autogen ON lightmeter DURATION 30d REPLICATION 1 DEFAULT'
+```
 
 ---
 
@@ -414,7 +414,7 @@ ssh pi@RPi-1 'jq ".csv.disk_free_mb" ~/Documents/Lightmeter_csv_out/status.json'
 A stock Raspberry Pi has no battery-backed RTC. At boot it restores the last
 saved time from `fake-hwclock` and only corrects to wall-clock time once it
 sees an NTP server. For field measurements that means CSV timestamps are
-only as good as the last sync — a cold boot with no network leaves rows
+only as good as the last sync: a cold boot with no network leaves rows
 stamped with the previous shutdown's time until NTP catches up.
 
 **Recommended pre-deployment routine:**
@@ -561,11 +561,11 @@ The Pi stays powered the entire time; only the hotspot was off.
 
 When the experiment is over and the Pi can be powered down:
 
-- **Preferred**: With the hotspot on, SSH in (`ssh <user>@<hostname>.local`)
-  and run `sudo shutdown -h now`. Wait until the green LED stops flickering
+- Cleanest option: with the hotspot on, SSH in (`ssh <user>@<hostname>.local`)
+  and run `sudo shutdown -h now`. Wait for the green LED to stop flickering
   (~10 s), then unplug.
-- **Acceptable**: just unplug. SD-card filesystems usually survive but a
-  clean shutdown is safer for long-term card life.
+- If SSH isn't available, just unplug. The filesystem usually survives, but
+  a clean shutdown is better for card longevity.
 
 ### Operational parameters
 
