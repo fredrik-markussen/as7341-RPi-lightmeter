@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
-# Installs InfluxDB 1.8 + Grafana on the Pi, creates the 'lightmeter'
+# Installs InfluxDB 1.12.4 + Grafana on the Pi, creates the 'lightmeter'
 # database with a 90-day retention policy, and provisions the Grafana
 # datasource. Safe to re-run — all steps are idempotent.
 #
 # Usage: sudo bash setup/install_local_stack.sh
+#
+# InfluxDB is installed from the upstream .deb release on dl.influxdata.com
+# (no apt repo) — avoids the v1/v2 package-name churn in repos.influxdata.com.
+# Grafana uses the official apt.grafana.com repo.
 
 set -euo pipefail
+
+INFLUX_VER="1.12.4"
 
 # ── pre-flight ────────────────────────────────────────────────────────────────
 
@@ -19,6 +25,18 @@ if ! grep -qi "debian\|raspbian" /etc/os-release 2>/dev/null; then
     exit 1
 fi
 
+ARCH=$(dpkg --print-architecture)
+case "$ARCH" in
+    arm64|amd64) ;;
+    armhf)
+        echo "ERROR: 32-bit ARM (armhf) is not supported by InfluxDB upstream .deb releases."
+        echo "       Use 64-bit Raspberry Pi OS (Bookworm 64-bit). The 64-bit image works on"
+        echo "       Pi 3 / Pi 4 / Pi 5 / Pi Zero 2 W."
+        exit 1
+        ;;
+    *) echo "Unsupported architecture: $ARCH (need arm64 or amd64)"; exit 1 ;;
+esac
+
 APT_UPDATED=false
 apt_update_once() {
     if [[ $APT_UPDATED == false ]]; then
@@ -27,23 +45,28 @@ apt_update_once() {
     fi
 }
 
-# ── InfluxDB 1.8 ──────────────────────────────────────────────────────────────
+# Clean up artefacts from earlier failed runs that used the apt-repo path.
+rm -f /etc/apt/sources.list.d/influxdata.list \
+      /etc/apt/sources.list.d/influxdb.list \
+      /etc/apt/trusted.gpg.d/influxdata-archive_compat.gpg
 
-echo "==> Installing InfluxDB 1.8 ..."
+# ── InfluxDB ${INFLUX_VER} (direct .deb) ──────────────────────────────────────
+
+echo "==> Installing InfluxDB ${INFLUX_VER} (${ARCH}) ..."
 
 if ! dpkg -s influxdb &>/dev/null; then
-    apt_update_once
-    apt-get install -y curl gnupg apt-transport-https
+    apt-get install -y wget
 
-    curl -fsSL https://repos.influxdata.com/influxdata-archive_compat.key \
-        | gpg --dearmor -o /etc/apt/trusted.gpg.d/influxdata-archive_compat.gpg
+    DEB_NAME="influxdb_${INFLUX_VER}-1_${ARCH}.deb"
+    DEB_URL="https://dl.influxdata.com/influxdb/releases/v${INFLUX_VER}/${DEB_NAME}"
 
-    echo "deb https://repos.influxdata.com/debian stable main" \
-        > /etc/apt/sources.list.d/influxdata.list
+    echo "    Downloading ${DEB_URL}"
+    wget -q --show-progress -O "/tmp/${DEB_NAME}" "${DEB_URL}"
 
-    apt-get update -q
-    # Pin to 1.8.x — the influxdb2 package is a separate name in this repo.
-    apt-get install -y "influxdb=1.8.*"
+    echo "    Installing /tmp/${DEB_NAME}"
+    dpkg -i "/tmp/${DEB_NAME}" || apt-get install -fy
+
+    rm -f "/tmp/${DEB_NAME}"
 else
     echo "    influxdb already installed: $(dpkg -s influxdb | grep '^Version' | awk '{print $2}')"
 fi
@@ -85,17 +108,26 @@ if [[ $RP_EXISTS -gt 0 ]]; then
     echo "    Retention policy: autogen 90 days."
 fi
 
-# ── Grafana ───────────────────────────────────────────────────────────────────
+# ── Grafana (apt.grafana.com) ─────────────────────────────────────────────────
 
 echo "==> Installing Grafana ..."
 
+# Clean up artefacts from earlier failed runs.
+rm -f /etc/apt/sources.list.d/grafana.list \
+      /usr/share/keyrings/grafana.key \
+      /usr/share/keyrings/grafana.gpg \
+      /etc/apt/keyrings/grafana.gpg
+
 if ! dpkg -s grafana &>/dev/null; then
     apt_update_once
-    apt-get install -y wget software-properties-common
+    apt-get install -y wget gpg apt-transport-https software-properties-common
 
-    wget -qO /usr/share/keyrings/grafana.key https://apt.grafana.com/gpg.key
+    mkdir -p /etc/apt/keyrings
+    wget -qO- https://apt.grafana.com/gpg.key \
+        | gpg --dearmor > /etc/apt/keyrings/grafana.gpg
+    chmod 644 /etc/apt/keyrings/grafana.gpg
 
-    echo "deb [signed-by=/usr/share/keyrings/grafana.key] https://apt.grafana.com stable main" \
+    echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" \
         > /etc/apt/sources.list.d/grafana.list
 
     apt-get update -q

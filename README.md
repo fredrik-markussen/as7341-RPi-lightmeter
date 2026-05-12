@@ -20,7 +20,7 @@ A short functional spec lives in [FSD.md](FSD.md).
   responsivity, and lux against a Seconic C-7000 + CoolLED pE-4000.
 - Multi-endpoint InfluxDB fan-out with parallel writes, per-endpoint retry
   queues, and a CSV archive that writes every cycle by default.
-- Optional local InfluxDB 1.8 + Grafana stack for offline / hotspot live view.
+- Optional local InfluxDB 1.x + Grafana stack for offline / hotspot live view.
 - `.env`-driven configuration so the script does not need editing per device.
 
 ## Hardware
@@ -202,21 +202,26 @@ directory. Edit `WorkingDirectory` / `ExecStart` if your layout differs.
 
 ## Local stack: InfluxDB + Grafana on the Pi
 
-Running InfluxDB 1.8 and Grafana directly on the Pi means data is recorded
+Running InfluxDB 1.x and Grafana directly on the Pi means data is recorded
 and viewable without internet access. The measurement script writes to
 `127.0.0.1:8086` over the loopback, so it keeps going even when there's no
 network.
 
 ### Install
 
+Requires 64-bit Raspberry Pi OS (Bookworm 64-bit). 32-bit `armhf` is not
+supported by upstream InfluxDB .deb releases.
+
 ```bash
 sudo bash setup/install_local_stack.sh
 ```
 
 The script (idempotent, re-runnable):
-- Adds the InfluxData APT repo and installs InfluxDB 1.8.x.
+- Downloads and installs InfluxDB 1.12.4 from `dl.influxdata.com` (direct
+  `.deb`, no apt repo — avoids the v1/v2 package-name churn in
+  `repos.influxdata.com`).
 - Creates the `lightmeter` database with a 90-day retention policy.
-- Adds the Grafana APT repo and installs Grafana.
+- Adds the official `apt.grafana.com` repo and installs Grafana.
 - Provisions a `lightmeter` datasource in Grafana pointing at `localhost:8086`.
 - Enables both services so they start automatically after reboot.
 
