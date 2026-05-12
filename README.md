@@ -459,6 +459,12 @@ This creates a NetworkManager profile (`lightmeter-hotspot`) that
 auto-connects whenever the named hotspot is in range. The measurement
 service keeps running uninterrupted.
 
+The script autodetects the first NetworkManager-managed wifi interface.
+On a Pi where the built-in `wlan0` is left unmanaged (e.g. because a
+USB wifi adapter on `wlan1` is the active radio), it picks `wlan1`. If
+you have multiple managed wifi interfaces and want a specific one, pass
+`--interface wlan1` (or whichever).
+
 Optional — fix the Pi's IP on the hotspot subnet so your phone always
 reaches it at the same address:
 

@@ -5,17 +5,24 @@
 #
 # Usage:
 #   sudo bash setup/configure_hotspot.sh "<SSID>" "<password>"
+#   sudo bash setup/configure_hotspot.sh "<SSID>" "<password>" --interface wlan1
 #   sudo bash setup/configure_hotspot.sh "<SSID>" "<password>" --static-ip 192.168.43.50/24
 #   sudo bash setup/configure_hotspot.sh "<SSID>" "<password>" --static-ip 192.168.43.50/24 --gateway 192.168.43.1
+#
+# By default the script autodetects the first NetworkManager-managed wifi
+# interface (handles Pis with a USB wifi adapter where the built-in wlan0 is
+# left unmanaged). Override with --interface if you have multiple managed
+# wifi interfaces and want a specific one.
 
 set -euo pipefail
 
 CON_NAME="lightmeter-hotspot"
 STATIC_IP=""
 GW=""
+IFACE=""
 
 usage() {
-    echo "Usage: $0 <SSID> <password> [--static-ip <addr/prefix>] [--gateway <ip>]"
+    echo "Usage: $0 <SSID> <password> [--interface <wlanN>] [--static-ip <addr/prefix>] [--gateway <ip>]"
     exit 1
 }
 
@@ -27,6 +34,7 @@ shift 2
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --interface) IFACE="$2";    shift 2 ;;
         --static-ip) STATIC_IP="$2"; shift 2 ;;
         --gateway)   GW="$2";        shift 2 ;;
         *) usage ;;
@@ -47,18 +55,39 @@ if ! command -v nmcli &>/dev/null; then
     exit 1
 fi
 
+# ── pick a managed wifi interface ────────────────────────────────────────────
+
+if [[ -z "$IFACE" ]]; then
+    # First wifi device whose STATE is NOT 'unmanaged'.  Catches the common
+    # case where wlan0 (built-in) is unmanaged and a USB wifi adapter on
+    # wlan1 is the active radio.
+    IFACE=$(nmcli -t -f DEVICE,TYPE,STATE device \
+        | awk -F: '$2=="wifi" && $3!="unmanaged" {print $1; exit}')
+    if [[ -z "$IFACE" ]]; then
+        echo "ERROR: no NetworkManager-managed wifi interface found."
+        echo "       Available wifi devices and their state:"
+        nmcli -f DEVICE,TYPE,STATE device | grep -E "DEVICE|wifi"
+        echo "       Pass --interface <name> if you know which to use."
+        exit 1
+    fi
+    echo "Detected managed wifi interface: $IFACE"
+else
+    echo "Using requested interface: $IFACE"
+fi
+
 # ── create or update profile ──────────────────────────────────────────────────
 
 if nmcli connection show "$CON_NAME" &>/dev/null; then
     echo "Updating existing profile '$CON_NAME' ..."
+    nmcli connection modify "$CON_NAME" connection.interface-name "$IFACE"
     nmcli connection modify "$CON_NAME" 802-11-wireless.ssid "$SSID"
     nmcli connection modify "$CON_NAME" wifi-sec.key-mgmt wpa-psk
     nmcli connection modify "$CON_NAME" wifi-sec.psk "$PASS"
 else
-    echo "Creating new profile '$CON_NAME' ..."
+    echo "Creating new profile '$CON_NAME' on $IFACE ..."
     nmcli connection add \
         type wifi \
-        ifname wlan0 \
+        ifname "$IFACE" \
         con-name "$CON_NAME" \
         ssid "$SSID" \
         wifi-sec.key-mgmt wpa-psk \
