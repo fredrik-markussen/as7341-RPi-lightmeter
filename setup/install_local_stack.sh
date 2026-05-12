@@ -39,9 +39,37 @@ esac
 
 APT_UPDATED=false
 apt_update_once() {
+    wait_for_apt
     if [[ $APT_UPDATED == false ]]; then
         apt-get update -q
         APT_UPDATED=true
+    fi
+}
+
+# Block until no other apt/dpkg process is holding a lock.  Common offender on
+# a fresh Pi is unattended-upgrades or apt.systemd.daily running in the
+# background.  Times out after 10 min so a permanently-stuck lock is loud
+# rather than silent.
+wait_for_apt() {
+    local max=600
+    local waited=0
+    while sudo fuser \
+            /var/lib/dpkg/lock-frontend \
+            /var/lib/dpkg/lock \
+            /var/lib/apt/lists/lock \
+            &>/dev/null; do
+        if [[ $waited -eq 0 ]]; then
+            echo "    Waiting for another apt/dpkg process to finish (e.g. unattended-upgrades) ..."
+        fi
+        if [[ $waited -ge $max ]]; then
+            echo "ERROR: apt lock still held after ${max}s. Check:  ps aux | grep -E 'apt|dpkg'"
+            return 1
+        fi
+        sleep 5
+        waited=$((waited + 5))
+    done
+    if [[ $waited -gt 0 ]]; then
+        echo "    apt lock released after ${waited}s, continuing."
     fi
 }
 
@@ -55,6 +83,7 @@ rm -f /etc/apt/sources.list.d/influxdata.list \
 echo "==> Installing InfluxDB ${INFLUX_VER} (${ARCH}) ..."
 
 if ! dpkg -s influxdb &>/dev/null; then
+    wait_for_apt
     apt-get install -y wget
 
     DEB_NAME="influxdb_${INFLUX_VER}-1_${ARCH}.deb"
@@ -64,7 +93,8 @@ if ! dpkg -s influxdb &>/dev/null; then
     wget -q --show-progress -O "/tmp/${DEB_NAME}" "${DEB_URL}"
 
     echo "    Installing /tmp/${DEB_NAME}"
-    dpkg -i "/tmp/${DEB_NAME}" || apt-get install -fy
+    wait_for_apt
+    dpkg -i "/tmp/${DEB_NAME}" || { wait_for_apt; apt-get install -fy; }
 
     rm -f "/tmp/${DEB_NAME}"
 else
@@ -120,6 +150,7 @@ rm -f /etc/apt/sources.list.d/grafana.list \
 
 if ! dpkg -s grafana &>/dev/null; then
     apt_update_once
+    wait_for_apt
     apt-get install -y wget gpg apt-transport-https software-properties-common
 
     mkdir -p /etc/apt/keyrings
@@ -130,7 +161,9 @@ if ! dpkg -s grafana &>/dev/null; then
     echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" \
         > /etc/apt/sources.list.d/grafana.list
 
+    wait_for_apt
     apt-get update -q
+    wait_for_apt
     apt-get install -y grafana
 else
     echo "    Grafana already installed: $(dpkg -s grafana | grep '^Version' | awk '{print $2}')"
