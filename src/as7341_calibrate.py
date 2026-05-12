@@ -283,9 +283,14 @@ def _interpolate(wls, irr, target_nm):
     raise ValueError(f"Wavelength {target_nm}nm is outside CSV range "
                      f"({wls[0]}–{wls[-1]}nm)")
 
-def _get_irradiance_for_level(level_num, n_levels):
-    """Prompt user for C-7000 spectral data for one intensity level. Returns list of 8 values."""
-    print(f"\n  C-7000 spectral data for level {level_num}/{n_levels}:")
+DEFAULT_RESP_WAVELENGTHS = [405, 435, 460, 470, 490, 500, 525, 550, 580, 595, 635, 660]
+
+def _get_irradiance_for_level(level_num, n_levels, led_nm):
+    """Prompt for C-7000 spectral data with the source set to a single pE-4000 LED.
+
+    Returns the irradiance (W/m²/nm) at the 8 AS7341 channel centers.
+    """
+    print(f"\n  C-7000 spectral data for level {level_num}/{n_levels} (LED {led_nm} nm):")
     print("  Option A — provide a CSV file exported from the C-7000")
     print("             (2 columns: wavelength_nm, irradiance_W_m2_nm)")
     print("  Option B — enter values manually for each channel wavelength")
@@ -304,7 +309,8 @@ def _get_irradiance_for_level(level_num, n_levels):
             print("  Falling back to manual entry.")
 
     vals = []
-    print("  Enter C-7000 irradiance (W/m²/nm) at each wavelength:")
+    print("  Enter C-7000 irradiance (W/m²/nm) at each wavelength")
+    print("  (channels far from the LED will be near zero — enter 0 if below floor):")
     for nm in WLS8:
         while True:
             try:
@@ -315,11 +321,25 @@ def _get_irradiance_for_level(level_num, n_levels):
                 print("    Please enter a number.")
     return vals
 
+def _parse_wavelengths(spec):
+    out = []
+    for tok in str(spec).split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        out.append(int(round(float(tok))))
+    if not out:
+        raise ValueError("--resp-wavelengths must list at least one wavelength in nm")
+    return out
+
 def run_phase2(s, args):
     header("PHASE 2: Spectral Responsivity")
     print("Equipment: AS7341 with dome diffuser + Seconic C-7000 side-by-side.")
-    print("Light source: CoolLED pE-4000.")
-    print(f"You will capture {args.resp_levels} intensity levels.")
+    print("Light source: CoolLED pE-4000 in single-LED mode (one wavelength at a time).")
+
+    wavelengths = _parse_wavelengths(args.resp_wavelengths)
+    print(f"Wavelength sweep ({len(wavelengths)} LEDs): "
+          f"{', '.join(str(w) for w in wavelengths)} nm")
     print("The C-7000 data can be entered as a CSV export or typed manually.")
 
     atime, astep, it_ms, fs, gnum = apply_preset(s, "hi")
@@ -331,22 +351,15 @@ def run_phase2(s, args):
         print(f"[WARN] {dark_path.name} not found — dark correction inactive for this phase.")
     dv, dc, _ = dark_offsets(darkJ, s, atime, astep)
     denom = max(1e-9, gnum * it_ms)
+    sat_th = 0.875 * fs; lo_th = 0.003 * fs
 
-    # Default plan: [10, 25, 50, 75, 90]% for 5 levels. For non-default counts,
-    # space evenly in 10–90% so endpoints stay clear of saturation/noise floor.
-    if args.resp_levels == 5:
-        pcts = [10, 25, 50, 75, 90]
-    elif args.resp_levels > 1:
-        pcts = [int(round(10 + 80 * i / (args.resp_levels - 1)))
-                for i in range(args.resp_levels)]
-    else:
-        pcts = [50]
+    level_data = []  # list of dicts: {"led_nm", "bc8", "irr8"}
 
-    level_data = []  # list of (bc8, irr8) per level
-
-    for k, pct in enumerate(pcts):
-        print(f"\n--- Level {k+1}/{args.resp_levels}: set CoolLED to ~{pct}% ---")
-        sat_th = 0.875 * fs; lo_th = 0.003 * fs
+    n = len(wavelengths)
+    for k, led_nm in enumerate(wavelengths):
+        print(f"\n--- Level {k+1}/{n}: set pE-4000 to single LED at {led_nm} nm ---")
+        print("  Dial intensity so the AS7341 peak channel sits well below saturation")
+        print("  but clearly above the noise floor. Take your time.")
         while True:
             input("  Press Enter to capture AS7341 reading...")
             vis_raw, _, _ = avg_frames(s, args.resp_avg)
@@ -363,21 +376,38 @@ def run_phase2(s, args):
         bc8 = [v / denom for v in vis]
         print(f"  BasicCounts: { {b: round(x,4) for b,x in zip(BANDS8, bc8)} }")
 
-        irr8 = _get_irradiance_for_level(k+1, args.resp_levels)
-        level_data.append((bc8, irr8))
+        irr8 = _get_irradiance_for_level(k+1, n, led_nm)
+        level_data.append({"led_nm": led_nm, "bc8": bc8, "irr8": irr8})
 
-    # Compute per-channel raw responsivity (BasicCounts per W/m²/nm) and average across levels
-    raw_resp = []
+    # Per-channel responsivity: average BC/E only over levels where the channel
+    # actually sees significant LED power. Channels far from the LED have near-zero
+    # SPD at their center and the ratio would amplify noise, so filter by relative
+    # SPD strength at this level.
+    frac = float(args.resp_min_irr_frac)
+    raw_resp = [None] * 8
+    n_used   = [0] * 8
+
     for i in range(8):
         vals = []
-        for bc8, irr8 in level_data:
-            if irr8[i] > 0 and bc8[i] > 0:
-                vals.append(bc8[i] / irr8[i])
+        for lvl in level_data:
+            bc = lvl["bc8"][i]
+            ir = lvl["irr8"][i]
+            max_ir = max(lvl["irr8"])
+            if max_ir <= 0 or ir <= 0 or bc <= 0:
+                continue
+            if (ir / max_ir) < frac:
+                continue
+            vals.append(bc / ir)
         if not vals:
-            raise ValueError(f"No valid responsivity data for channel {BANDS8[i]}")
-        raw_resp.append(sum(vals) / len(vals))
+            raise ValueError(
+                f"No valid responsivity data for channel {BANDS8[i]} "
+                f"(λ={WLS8[i]} nm). Add an LED near this wavelength or lower "
+                f"--resp-min-irr-frac (currently {frac})."
+            )
+        raw_resp[i] = sum(vals) / len(vals)
+        n_used[i]   = len(vals)
 
-    # Normalise to F5/555nm = 1.0
+    # Normalise to F5/555 nm = 1.0
     ref = raw_resp[WLS8.index(555)]
     corrections = [ref / r for r in raw_resp]
 
@@ -387,25 +417,34 @@ def run_phase2(s, args):
         "responsivity_BC_per_W_m2_nm": {b: r for b, r in zip(BANDS8, raw_resp)},
         "meta": {
             "gain": str(s.gain), "it_ms": it_ms,
-            "n_levels": args.resp_levels, "resp_avg_frames": args.resp_avg,
+            "wavelengths_nm": wavelengths,
+            "n_samples_per_channel": {b: n for b, n in zip(BANDS8, n_used)},
+            "min_irr_frac": frac,
+            "resp_avg_frames": args.resp_avg,
             "instrument": "Seconic C-7000",
+            "source": "CoolLED pE-4000, single-LED mode (wavelength sweep)",
             "units": "responsivity_BC_per_W_m2_nm in BasicCounts per (W/m^2/nm)",
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         },
+        "raw_levels": level_data,
     }
     with open(out_path, "w") as f:
         json.dump(result, f, indent=2)
 
     print("\nEmpirical responsivity corrections (normalised to 555nm = 1.0):")
     datasheet = [2.0, 1.67, 1.33, 1.11, 1.0, 1.11, 1.43, 2.0]
-    print(f"  {'Channel':>8}  {'Measured':>10}  {'Datasheet':>10}  {'Diff':>8}")
-    for b, meas, ds in zip(BANDS8, corrections, datasheet):
+    print(f"  {'Channel':>8}  {'Measured':>10}  {'Datasheet':>10}  {'Diff':>8}  {'n':>4}")
+    for b, meas, ds, n in zip(BANDS8, corrections, datasheet, n_used):
         diff = meas - ds
-        print(f"  {b:>8}  {meas:>10.4f}  {ds:>10.4f}  {diff:>+8.4f}")
+        print(f"  {b:>8}  {meas:>10.4f}  {ds:>10.4f}  {diff:>+8.4f}  {n:>4}")
 
     print("\nAbsolute responsivity (BasicCounts per W/m^2/nm):")
     for b, r in zip(BANDS8, raw_resp):
         print(f"  {b:>8}  {r:>12.4e}")
+    short = [b for b, n in zip(BANDS8, n_used) if n < 2]
+    if short:
+        print(f"\n[NOTE] Channels with < 2 contributing LEDs: {', '.join(short)}. "
+              "Consider adding LEDs nearer those wavelengths to your sweep.")
     print(f"\nSaved {out_path.name}")
     print("Restart as7341_influx_nir.py to apply the new corrections "
           "and emit absolute irradiance per channel.")
@@ -546,10 +585,16 @@ def main():
     ap.add_argument("--dark-warmup",  type=int,   default=10)
 
     # Phase 2
-    ap.add_argument("--resp-levels",  type=int,   default=5,
-                    help="Number of CoolLED intensity levels for responsivity measurement")
+    ap.add_argument("--resp-wavelengths", type=str,
+                    default=",".join(str(w) for w in DEFAULT_RESP_WAVELENGTHS),
+                    help="Comma-separated pE-4000 LED wavelengths (nm) to sweep, "
+                         "one LED at a time")
     ap.add_argument("--resp-avg",     type=int,   default=20,
-                    help="Frames averaged per intensity level")
+                    help="Frames averaged per wavelength step")
+    ap.add_argument("--resp-min-irr-frac", type=float, default=0.2,
+                    help="Per level, include a channel only if its irradiance at the "
+                         "channel center is at least this fraction of the max channel "
+                         "irradiance at that level (filters out far-off-peak noise)")
 
     # Phase 3
     ap.add_argument("--lux-scenes",   type=int,   default=12,

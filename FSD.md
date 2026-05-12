@@ -61,20 +61,27 @@ spectroradiometer + CoolLED pE-4000 + dome diffusers.
 - **Phase 1 — Dark capture:** 100 samples per preset (warmup discarded),
   median per channel, written with full metadata (gain, ATIME, ASTEP, timestamp).
   Run for both HI and LO presets → `as7341_dark_hi.json`, `as7341_dark_lo.json`.
-- **Phase 2 — Spectral responsivity (VIS8):** AS7341 + C-7000 side-by-side at
-  5 CoolLED intensity levels (default 10/25/50/75/90 %). C-7000 SPD input via
-  CSV export (sorted automatically) or manual entry at the 8 channel
-  wavelengths. Writes `as7341_responsivity.json` containing two blocks:
+- **Phase 2 — Spectral responsivity (VIS8):** AS7341 + C-7000 side-by-side
+  under the CoolLED pE-4000 in single-LED mode. The script sweeps the in-band
+  pE-4000 LEDs (default 12 LEDs spanning 405–660 nm) one at a time, dialled to
+  a non-saturating intensity. C-7000 SPD input per step via CSV export
+  (sorted automatically) or manual entry at the 8 channel wavelengths.
+  Per-channel responsivity is averaged across only the LED steps where the
+  channel's centre irradiance is at least `--resp-min-irr-frac` (default 0.2)
+  of the strongest channel at that step, which discards far-off-peak ratios
+  that would amplify noise. Writes `as7341_responsivity.json` containing
   `corrections` (per-channel multipliers normalised to 555 nm = 1.0, used to
-  correct the relative spectrum) and `responsivity_BC_per_W_m2_nm` (absolute
+  correct the relative spectrum), `responsivity_BC_per_W_m2_nm` (absolute
   per-channel responsivity in BasicCounts per W/m²/nm, used to convert
-  BasicCounts to absolute spectral irradiance at runtime). Loaded
-  automatically by the main script at startup if present; falls back to
-  datasheet values for `corrections` and skips absolute irradiance output
+  BasicCounts to absolute spectral irradiance at runtime), and a `raw_levels`
+  block with the per-step (LED nm, BasicCounts, irradiance) for diagnostics.
+  Loaded automatically by the main script at startup if present; falls back
+  to datasheet values for `corrections` and skips absolute irradiance output
   otherwise. NIR (~910 nm) is **not** measured in Phase 2 because the C-7000
-  covers 380–780 nm only; the script keeps the datasheet default for NIR
-  spectral composition and emits no absolute NIR irradiance. To override the
-  NIR composition correction, add a `nir` entry under `corrections`.
+  covers 380–780 nm only and the pE-4000 stops at 770 nm; the script keeps
+  the datasheet default for NIR spectral composition and emits no absolute
+  NIR irradiance. To override the NIR composition correction, add a `nir`
+  entry under `corrections`.
 - **Phase 3 — Lux model:** ≥ 10 diverse scenes per preset against C-7000 lux
   readings (default 12, recommended 12–20). VIS8 with intercept; default fit is
   ridge (α=0.01) for stability with small samples; OLS available with

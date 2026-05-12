@@ -120,11 +120,20 @@ This walks through three phases:
 
 ### Phase 2 — Spectral responsivity (VIS8)
 
-- AS7341 + Seconic C-7000 side-by-side under a CoolLED pE-4000.
-- 5 intensity levels by default (10 / 25 / 50 / 75 / 90 %).
-- C-7000 spectral data either pasted from a 2-column CSV
-  (`wavelength_nm, irradiance_W_m2_nm`) or entered manually at the 8 channel
-  wavelengths.
+- AS7341 + Seconic C-7000 side-by-side under a CoolLED pE-4000 in
+  **single-LED mode** — one wavelength at a time, dialled to a non-saturating
+  intensity.
+- Wavelength sweep: 12 in-VIS8-range pE-4000 LEDs by default
+  (`405, 435, 460, 470, 490, 500, 525, 550, 580, 595, 635, 660` nm). The
+  pE-4000 carries 16 LEDs grouped across 4 channels (365–770 nm); the default
+  list picks the LEDs that land inside the AS7341 VIS8 passband. Override with
+  `--resp-wavelengths 405,460,525,...`.
+- For each LED step, capture the AS7341 reading and either provide a C-7000
+  CSV (`wavelength_nm, irradiance_W_m2_nm`) or type the channel-centre
+  irradiances. Per-channel responsivity is then averaged across only the LED
+  steps where that channel actually sees significant power (controlled by
+  `--resp-min-irr-frac`, default 0.2 of the strongest channel at that step) —
+  this rejects the far-off-peak ratios that would otherwise amplify noise.
 - Output: `as7341_responsivity.json` with two blocks:
   - `corrections` — per-channel multipliers normalised to 555 nm = 1.0,
     used to correct the relative spectrum (`rel_intensity`).
@@ -132,13 +141,15 @@ This walks through three phases:
     BasicCounts per W/m²/nm. When present, the runtime emits absolute
     spectral irradiance per VIS8 channel (`irr_*` CSV columns,
     `irradiance` Influx field).
-  The main script picks both up automatically at startup; without the file,
-  datasheet defaults are used for `corrections` and absolute irradiance is
-  not emitted.
-- NIR (~910 nm) is **not** measured here — the C-7000 covers 380–780 nm only.
-  The runtime keeps a datasheet default for NIR composition correction
-  (overridable via a `nir` key under `corrections`); absolute NIR irradiance
-  is never emitted.
+  Plus `meta.wavelengths_nm`, `meta.n_samples_per_channel`, and a `raw_levels`
+  block holding the per-step (LED nm, BasicCounts, irradiance) for post-hoc
+  inspection. The main script picks the corrections and absolute responsivity
+  up automatically at startup; without the file, datasheet defaults are used
+  for `corrections` and absolute irradiance is not emitted.
+- NIR (~910 nm) is **not** measured here — the C-7000 covers 380–780 nm only
+  and the pE-4000 stops at 770 nm. The runtime keeps a datasheet default for
+  NIR composition correction (overridable via a `nir` key under
+  `corrections`); absolute NIR irradiance is never emitted.
 
 ### Phase 3 — Lux model
 
