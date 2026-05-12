@@ -151,7 +151,10 @@ rm -f /etc/apt/sources.list.d/grafana.list \
 if ! dpkg -s grafana &>/dev/null; then
     apt_update_once
     wait_for_apt
-    apt-get install -y wget gpg apt-transport-https software-properties-common
+    # wget and gpg are usually pre-installed; install is a no-op if so.
+    # apt-transport-https and software-properties-common are not needed —
+    # we write sources.list.d directly and use only HTTPS for the repo.
+    apt-get install -y wget gpg
 
     mkdir -p /etc/apt/keyrings
     wget -qO- https://apt.grafana.com/gpg.key \
