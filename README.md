@@ -496,6 +496,125 @@ Grafana login: `admin` / `admin` on first use (you'll be prompted to change it).
 
 ---
 
+## Operating the lightmeter (end-user routine)
+
+This section is for users running an already-configured lightmeter in the
+field. The administrator has done the install, hotspot pairing, dashboard
+building, and storage tuning. The end-user only needs their phone, the Pi,
+and a power source.
+
+### Admin handoff checklist
+
+Before handing the lightmeter over, the admin confirms:
+
+- [ ] `setup/install_local_stack.sh` ran cleanly; `systemctl is-active influxdb grafana-server` returns `active` for both.
+- [ ] `setup/configure_hotspot.sh "<SSID>" "<password>"` was run with the end-user's hotspot SSID and password. Verified by powering the Pi within range and watching it associate (`nmcli connection show --active`).
+- [ ] Pi hostname is set to something memorable (e.g. `lightmeter`, not the default `raspberrypi`) via `sudo raspi-config` → System Options → Hostname.
+- [ ] Grafana admin password has been changed from the default and recorded on the reference card.
+- [ ] A Grafana dashboard pointing at the `lightmeter` datasource has been built and saved (see [Local stack → Building a dashboard](#building-a-dashboard) for example queries).
+- [ ] systemd service is enabled and started: `systemctl is-enabled as7341@<user>.service` returns `enabled`.
+- [ ] Calibration files exist at the repo root: `as7341_dark_hi.json`, `as7341_dark_lo.json`, `as7341_lux_cal_hi.json`, `as7341_lux_cal_lo.json` (and optionally `as7341_responsivity.json`).
+- [ ] High-endurance SD card or USB SSD installed; `noatime` on `/`; a CSV-cleanup cron job if applicable.
+- [ ] The end-user has a reference card with the values below.
+
+### Reference card (give this to the end-user)
+
+```
+Grafana URL: http://<hostname>.local:3000   (or  http://<static-ip>:3000)
+Login:       <username> / <password>
+Dashboard:   <dashboard name>
+Hotspot:     <SSID>            (already saved on your phone)
+```
+
+### Starting a measurement session
+
+1. Turn **ON** your phone's mobile hotspot.
+2. Plug the Pi into power. The red LED lights immediately; the green
+   activity LED flickers as it boots.
+3. **Wait 10 minutes.** During this window the Pi:
+   - Boots (~1–2 min on Pi 4, ~2–3 min on Pi Zero 2 W).
+   - Joins your hotspot (~30 s).
+   - Syncs the clock via NTP (~30 s after network is up).
+   - Begins measuring — first sample within ~1 min of the service starting.
+4. On your phone, open a browser and go to the Grafana URL on the reference card.
+5. Log in. Open the dashboard.
+6. Confirm new data is appearing — the most recent point should be timestamped
+   within the last couple of minutes. At the default `PERIOD=60` a new point
+   lands every minute.
+7. Once you've seen at least one fresh point, turn the hotspot **OFF**.
+   The Pi keeps measuring and recording locally; the hotspot is only needed
+   for live viewing.
+
+### Coming back hours or days later
+
+The Pi stays powered the entire time; only the hotspot was off.
+
+1. Turn **ON** the hotspot.
+2. Wait ~30 s for the Pi to rejoin.
+3. Open Grafana on your phone (you may still be logged in from last time).
+4. Set the time range in the top-right corner — "Last 24 hours",
+   "Last 7 days", or a custom range covering the period since your last visit.
+5. All accumulated measurements appear.
+6. When done viewing, turn the hotspot off again.
+
+### Stopping a session
+
+When the experiment is over and the Pi can be powered down:
+
+- **Preferred**: With the hotspot on, SSH in (`ssh <user>@<hostname>.local`)
+  and run `sudo shutdown -h now`. Wait until the green LED stops flickering
+  (~10 s), then unplug.
+- **Acceptable**: just unplug. SD-card filesystems usually survive but a
+  clean shutdown is safer for long-term card life.
+
+### Operational parameters
+
+| Parameter                                | Value                              | Notes |
+|------------------------------------------|------------------------------------|-------|
+| Measurement cadence                      | 60 s                               | Set via `PERIOD` in `.env`. Lowering increases SD wear. |
+| Time to first data after cold boot       | 3–10 min                           | Boot + hotspot join + NTP + first cycle. |
+| Time to reconnect after hotspot ON       | ~30 s                              | Auto-rejoin via NetworkManager. |
+| Pi idle power draw                       | 1–5 W                              | Zero 2 W: ~1 W; Pi 4: ~3–5 W. |
+| Run time on 20 000 mAh USB power bank    | 24–100 h                           | Wall power recommended for multi-day deployments. |
+| Run time on wall power                   | indefinite                         | |
+| Storage per day                          | ~5–15 MB Influx + ~250 KB CSV      | At `PERIOD=60`. Scales linearly with cadence. |
+| Default InfluxDB retention               | 90 days                            | Configurable; see [Storage and retention](#storage-and-retention). |
+| Hotspot needed for                       | live viewing only                  | Data records continuously without network. |
+| Clock drift while hotspot OFF            | ~10 s/day                          | Resets to NTP-accurate on next hotspot rejoin. |
+| Max hotspot-OFF duration (data)          | until SD card fills                | At default cadence and 64 GB card: many months. |
+| Max hotspot-OFF duration (clock)         | weeks                              | Drift accumulates from the Pi's onboard oscillator. |
+
+### End-user troubleshooting
+
+**Phone won't load the Grafana URL**
+- Make sure your phone is on its own hotspot Wi-Fi. Some phones turn Wi-Fi
+  off when sharing — flip it back on; the hotspot stays active.
+- Some phones block the host device from reaching connected clients via
+  the phone's own browser. If that's the case, join the hotspot from a
+  second device (tablet, laptop) and open Grafana there.
+- Wait an extra 2 minutes after first power-up; cold boots can be slow.
+- Try the static-IP form on the reference card (`http://<ip>:3000`) if
+  the `.local` hostname doesn't resolve.
+
+**Grafana loads but the dashboard says "No data"**
+- The time range (top-right) may be set to a window with no measurements
+  yet. Switch to "Last 15 minutes" or "Last hour" and refresh.
+- The Pi may still be booting; wait another minute and refresh.
+
+**Timestamps look wrong (years in the past)**
+- The Pi's clock didn't sync to NTP before measurements began — usually
+  caused by turning the hotspot on **after** the Pi was already booting.
+  Power-cycle the Pi with the hotspot **already on** and wait 10 min.
+- Existing correctly-stamped data is not affected.
+
+**Pi appears unresponsive (no Grafana, can't SSH)**
+- LED check: solid red = power OK; green flickering during activity = OK.
+  No green flicker for >30 s after boot suggests something is wrong.
+- Unplug, wait 10 s, plug back in. Allow another 10 min before retrying.
+- If that fails, the admin will need to attach a monitor or read the SD card.
+
+---
+
 ## Troubleshooting
 
 **Sensor not detected**
