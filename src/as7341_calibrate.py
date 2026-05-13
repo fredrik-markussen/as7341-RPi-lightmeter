@@ -16,7 +16,7 @@ Output files (written to --out-dir, default: project root):
   as7341_lux_cal_lo.json     Phase 3 LO
 """
 
-import argparse, csv, datetime, json, random, time
+import argparse, csv, datetime, json, random, re, time
 from pathlib import Path
 from statistics import median
 
@@ -285,6 +285,59 @@ def _interpolate(wls, irr, target_nm):
 
 DEFAULT_RESP_WAVELENGTHS = [405, 435, 460, 470, 490, 500, 525, 550, 580, 595, 635, 660]
 
+def _parse_c7000_native(path):
+    """Parse a Seconic C-7000 native export CSV (multi-row header format).
+
+    Recognises both 'CoolLED_nm' and 'CoolLED_snm' field names.
+    Returns (led_nm, strength_pct, irr8) where irr8 is W/m²/nm at WLS8,
+    or None if the file carries no CoolLED LED-wavelength metadata.
+    """
+    led_nm = None
+    strength = None
+    spd = {}
+    for line in Path(path).read_text(errors="replace").splitlines():
+        for field in ("CoolLED_nm,", "CoolLED_snm,"):
+            if line.startswith(field):
+                val = line.split(",")[1].strip()
+                if val:
+                    try:
+                        led_nm = int(round(float(val)))
+                    except ValueError:
+                        pass
+        if line.startswith("CoolLED_strength,"):
+            val = line.split(",")[1].strip()
+            if val:
+                try:
+                    strength = int(round(float(val)))
+                except ValueError:
+                    pass
+        m = re.match(r"Spectral Data (\d+)\[nm\],([\d.eE+\-]+)", line)
+        if m:
+            spd[int(m.group(1))] = float(m.group(2))
+    if led_nm is None or not spd:
+        return None
+    return (led_nm, strength, [spd.get(w, 0.0) for w in WLS8])
+
+def _load_c7000_dir(dirpath):
+    """Load all C-7000 native CSVs from dirpath.
+
+    Returns list of (led_nm, strength_pct, irr8) sorted by (led_nm, strength).
+    Files without CoolLED LED-wavelength metadata are skipped with a warning.
+    """
+    levels = []
+    skipped = []
+    for f in sorted(Path(dirpath).glob("*.csv")):
+        result = _parse_c7000_native(f)
+        if result is None:
+            skipped.append(f.name)
+        else:
+            levels.append(result)
+    if skipped:
+        print(f"[WARN] Skipped {len(skipped)} CSV(s) with no CoolLED metadata: "
+              f"{', '.join(skipped)}")
+    levels.sort(key=lambda x: (x[0], x[1] or 0))
+    return levels
+
 def _get_irradiance_for_level(level_num, n_levels, led_nm):
     """Prompt for C-7000 spectral data with the source set to a single pE-4000 LED.
 
@@ -337,10 +390,19 @@ def run_phase2(s, args):
     print("Equipment: AS7341 with dome diffuser + Seconic C-7000 side-by-side.")
     print("Light source: CoolLED pE-4000 in single-LED mode (one wavelength at a time).")
 
-    wavelengths = _parse_wavelengths(args.resp_wavelengths)
-    print(f"Wavelength sweep ({len(wavelengths)} LEDs): "
-          f"{', '.join(str(w) for w in wavelengths)} nm")
-    print("The C-7000 data can be entered as a CSV export or typed manually.")
+    if args.c7000_dir:
+        c7000_levels = _load_c7000_dir(args.c7000_dir)
+        if not c7000_levels:
+            raise RuntimeError(f"No valid C-7000 CSV files found in '{args.c7000_dir}'")
+        wavelengths = sorted(set(lv[0] for lv in c7000_levels))
+        print(f"\nLoaded {len(c7000_levels)} C-7000 measurements from '{args.c7000_dir}'")
+        print(f"LED wavelengths: {', '.join(str(w) for w in wavelengths)} nm")
+        print("C-7000 irradiance pre-loaded — only AS7341 captures needed.")
+    else:
+        wavelengths = _parse_wavelengths(args.resp_wavelengths)
+        print(f"Wavelength sweep ({len(wavelengths)} LEDs): "
+              f"{', '.join(str(w) for w in wavelengths)} nm")
+        print("The C-7000 data can be entered as a CSV export or typed manually.")
 
     atime, astep, it_ms, fs, gnum = apply_preset(s, "hi")
     print(f"\nUsing HI preset: gain={s.gain}, IT={it_ms:.1f}ms")
@@ -355,29 +417,48 @@ def run_phase2(s, args):
 
     level_data = []  # list of dicts: {"led_nm", "bc8", "irr8"}
 
-    n = len(wavelengths)
-    for k, led_nm in enumerate(wavelengths):
-        print(f"\n--- Level {k+1}/{n}: set pE-4000 to single LED at {led_nm} nm ---")
-        print("  Dial intensity so the AS7341 peak channel sits well below saturation")
-        print("  but clearly above the noise floor. Take your time.")
-        while True:
-            input("  Press Enter to capture AS7341 reading...")
-            vis_raw, _, _ = avg_frames(s, args.resp_avg)
-            peak = max(vis_raw)
-            if peak >= sat_th:
-                print(f"  [WARN] Saturating (peak={int(peak)}, FS={fs}) — reduce CoolLED intensity.")
-                continue
-            if peak <= lo_th:
-                print(f"  [WARN] Signal too low (peak={int(peak)}) — increase CoolLED intensity.")
-                continue
-            break
-
-        vis = [max(0.0, v - d) for v, d in zip(vis_raw, dv)]
-        bc8 = [v / denom for v in vis]
-        print(f"  BasicCounts: { {b: round(x,4) for b,x in zip(BANDS8, bc8)} }")
-
-        irr8 = _get_irradiance_for_level(k+1, n, led_nm)
-        level_data.append({"led_nm": led_nm, "bc8": bc8, "irr8": irr8})
+    if args.c7000_dir:
+        n = len(c7000_levels)
+        for k, (led_nm, strength, irr8) in enumerate(c7000_levels):
+            str_label = f" at {strength}%" if strength is not None else ""
+            print(f"\n--- Step {k+1}/{n}: set pE-4000 to {led_nm} nm{str_label} ---")
+            while True:
+                input("  Press Enter to capture AS7341 reading...")
+                vis_raw, _, _ = avg_frames(s, args.resp_avg)
+                peak = max(vis_raw)
+                if peak >= sat_th:
+                    print(f"  [WARN] Saturating (peak={int(peak)}, FS={fs}) — reduce intensity.")
+                    continue
+                if peak <= lo_th:
+                    print(f"  [WARN] Signal too low (peak={int(peak)}) — increase intensity.")
+                    continue
+                break
+            vis = [max(0.0, v - d) for v, d in zip(vis_raw, dv)]
+            bc8 = [v / denom for v in vis]
+            print(f"  BasicCounts: { {b: round(x,4) for b,x in zip(BANDS8, bc8)} }")
+            level_data.append({"led_nm": led_nm, "bc8": bc8, "irr8": irr8})
+    else:
+        n = len(wavelengths)
+        for k, led_nm in enumerate(wavelengths):
+            print(f"\n--- Level {k+1}/{n}: set pE-4000 to single LED at {led_nm} nm ---")
+            print("  Dial intensity so the AS7341 peak channel sits well below saturation")
+            print("  but clearly above the noise floor. Take your time.")
+            while True:
+                input("  Press Enter to capture AS7341 reading...")
+                vis_raw, _, _ = avg_frames(s, args.resp_avg)
+                peak = max(vis_raw)
+                if peak >= sat_th:
+                    print(f"  [WARN] Saturating (peak={int(peak)}, FS={fs}) — reduce CoolLED intensity.")
+                    continue
+                if peak <= lo_th:
+                    print(f"  [WARN] Signal too low (peak={int(peak)}) — increase CoolLED intensity.")
+                    continue
+                break
+            vis = [max(0.0, v - d) for v, d in zip(vis_raw, dv)]
+            bc8 = [v / denom for v in vis]
+            print(f"  BasicCounts: { {b: round(x,4) for b,x in zip(BANDS8, bc8)} }")
+            irr8 = _get_irradiance_for_level(k+1, n, led_nm)
+            level_data.append({"led_nm": led_nm, "bc8": bc8, "irr8": irr8})
 
     # Per-channel responsivity: average BC/E only over levels where the channel
     # actually sees significant LED power. Channels far from the LED have near-zero
@@ -595,6 +676,11 @@ def main():
                     help="Per level, include a channel only if its irradiance at the "
                          "channel center is at least this fraction of the max channel "
                          "irradiance at that level (filters out far-off-peak noise)")
+    ap.add_argument("--c7000-dir", type=str, default=None,
+                    help="Directory of pre-collected Seconic C-7000 native CSV exports. "
+                         "Irradiance is loaded from these files; only AS7341 captures "
+                         "are needed interactively. Files must contain CoolLED_nm or "
+                         "CoolLED_snm metadata.")
 
     # Phase 3
     ap.add_argument("--lux-scenes",   type=int,   default=12,
