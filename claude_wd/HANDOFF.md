@@ -1,0 +1,168 @@
+# Claude Handoff — 2026-04-29
+
+## Session 1 — Measurement script
+
+| Task | Detail |
+|---|---|
+| F6 auto-sensitivity | 2-step HI/LO preset switching (`SENS_HI` GAIN_256X/50ms, `SENS_LO` GAIN_16X/10ms). Hysteresis counter prevents flapping. On switch: registers updated, cal files reloaded, frame discarded. |
+| F8 CSV archive | 10-min tmp files → daily aggregates in `~/Documents/Lightmeter_csv_out/`. Startup recovery merges leftovers. |
+| Sleep cadence fix | `max(0.0, max(PERIOD, min_period) - loop_elapsed)` |
+| Legacy script deleted | `src/RPi-as7341-InfluxDB.py` removed |
+| `.env` loading | `_apply_env(BASE_DIR / ".env")` at module level; `config/sample.env` updated |
+| Systemd paths | `systemd/as7341.service` now references `as7341-RPi-lightmeter` |
+
+## Session 2 — Calibration scripts
+
+| Task | Detail |
+|---|---|
+| `src/as7341_dark_capture.py` refactored | CLI args: `--integration-time-ms`, `--gain`, `--samples` (default 100), `--warmup`, `--out`. |
+| `src/as7341_calibrate.py` created | Guided 3-phase calibration script (dark, responsivity, lux). |
+| `src/as7341_influx_nir.py` | Loads `as7341_responsivity.json` at startup; falls back to datasheet defaults. |
+
+## Session 3 — Code review fixes (2026-04-29)
+
+| Task | Detail |
+|---|---|
+| F2 lux cal meta validation | `load_cal()` now returns meta; `apply_sensitivity()` warns when cal gain/ATIME/ASTEP do not match the active preset. |
+| Robust HTTP timeout | `as_completed(timeout=…)` wrapped in `FuturesTimeoutError` handler; hung endpoints queue for retry instead of crashing the loop. |
+| NIR responsivity | New `NIR_RESPONSIVITY_CORRECTION` constant (datasheet default 2.5, override via `corrections.nir` in JSON); applied to NIR before computing the VIS+NIR fraction. |
+| Phase 3 robustness | Default `--lux-scenes` 12 (≥ 10 enforced), `--lux-ridge` 0.01, scene-skip on saturation, per-preset `random.seed`, new `--lux-nnls` for non-negative weights, `n_scenes_used` recorded in cal meta. |
+| Phase 2 levels | Default 5-level set is now [10, 25, 50, 75, 90] %. C-7000 CSV is sorted by wavelength after parsing. |
+| `as7341_dark_capture.py` | Default `--out` now `as7341_dark_hi.json`; standardised on `board.I2C()`. |
+| Cleanup | Removed legacy root-level `as7341_dark.json` / `as7341_lux_cal.json`; removed dead imports and unused `median_frames`. |
+| FSD updates | F2 reworded for both-side validation; F4 reflects ridge default + NNLS option; F5 documents NIR datasheet default + override path; F7 mentions wall-clock budget; F8 reworded as in-memory retry queue + CSV archive (not auto-replayed). |
+| README | Rewritten for HI/LO preset model and `.env` configuration. |
+
+## Current file state
+
+| File | Status |
+|---|---|
+| `src/as7341_influx_nir.py` | Active measurement script — complete. |
+| `src/as7341_calibrate.py` | Guided calibration script — complete; awaits hardware run. |
+| `src/as7341_dark_capture.py` | Standalone dark utility; defaults to HI preset. |
+| `src/as7341_calibrate_lux.py` | Legacy stand-alone (NNLS, bootstrap, CLEAR/NIR regressors). Kept as power-user fallback; not part of guided flow. |
+| `systemd/as7341.service` | Correct paths. |
+| `config/sample.env` | Up to date. |
+| `FSD.md`, `README.md` | Aligned with current code. |
+| `as7341_dark_hi/lo.json` | **Does not exist** — must be generated on hardware. |
+| `as7341_lux_cal_hi/lo.json` | **Does not exist** — must be generated on hardware. |
+| `as7341_responsivity.json` | **Does not exist** — must be generated on hardware. |
+
+## What needs doing next
+
+### 1. Run calibration on hardware (blocking)
+
+The measurement script raises `FileNotFoundError` at startup if
+`as7341_lux_cal_hi.json` is missing, and at the first HI→LO sensitivity switch
+if `as7341_lux_cal_lo.json` is missing. Run the full guided calibration:
+
+```bash
+source .venv/bin/activate
+python3 src/as7341_calibrate.py
+```
+
+Equipment needed:
+- Seconic C-7000 spectroradiometer
+- CoolLED pE-4000 (Phase 2: single-LED wavelength sweep — see Session 4 below)
+- Dome diffusers on both instruments
+- Opaque cap for sensor during Phase 1
+
+For Phase 2 the C-7000 can export a 2-column CSV (nm, W/m²/nm) per LED step,
+or values can be entered manually at the 8 channel wavelengths.
+
+To run individual phases:
+```bash
+python3 src/as7341_calibrate.py --phase dark             # Phase 1 only
+python3 src/as7341_calibrate.py --phase responsivity     # Phase 2 only
+python3 src/as7341_calibrate.py --phase lux              # Phase 3 only
+python3 src/as7341_calibrate.py --phase lux --preset hi  # re-run HI lux only
+```
+
+### 2. Optional NIR override
+
+Phase 2 does not measure NIR (C-7000 covers 380–780 nm only). After the run,
+if you have an NIR-capable reference, edit `as7341_responsivity.json` and add
+a `nir` entry under `corrections` to override the datasheet default of 2.5.
+
+### 3. Future work (FSD §8 out-of-scope)
+- CCT / CRI estimation from spectral data.
+- InfluxDB v2/v3 protocol support.
+- Grafana dashboard templates (separate repo).
+- CSV archive replay path (currently archive-only).
+
+---
+
+## Session 4 — Phase 2 redesign for pE-4000 wavelength sweep (2026-05-13)
+
+Pushed as commit `fe1dd81` on `origin/main`.
+
+### Why
+Original Phase 2 ran the pE-4000 at 5 broadband intensities (10/25/50/75/90 %)
+and averaged BasicCounts ÷ SPD at each AS7341 channel centre. Problem: all 5
+levels deliver roughly the same SPD shape, so the per-channel system is
+near-degenerate — you get 5 noisy estimates of the same broadband ratio per
+channel. Looking at the pE-4000 docs we confirmed it carries **16 LEDs across
+4 wavelength-grouped channels** (365–770 nm) and can be driven one LED at a
+time. Sweeping in-band LEDs gives one near-monochromatic stimulus per step,
+so each AS7341 channel gets characterised against the wavelength region it
+actually cares about.
+
+### pE-4000 wavelength reference
+| Channel A (UV–violet) | Channel B (blue–cyan) | Channel C (green–yellow) | Channel D (red–NIR) |
+|---|---|---|---|
+| 365 | 460 | 525 | 635 |
+| 385 | 470 | 550 | 660 |
+| 405 | 490 | 580 | 740 |
+| 435 | 500 | 595 | 770 |
+
+Single-LED mode = one wavelength at a time; up to 4 simultaneously (one per
+channel column). Default sweep uses the 12 LEDs that fall inside the AS7341
+VIS8 passband: `405, 435, 460, 470, 490, 500, 525, 550, 580, 595, 635, 660`.
+
+### Script changes (`src/as7341_calibrate.py`)
+| Change | Detail |
+|---|---|
+| Dropped `--resp-levels` | No longer applicable — there's one capture per LED. |
+| Added `--resp-wavelengths` | Comma-separated LED wavelengths (nm). Default = the 12 LEDs above. |
+| Added `--resp-min-irr-frac` | Default 0.2. Per LED step, a channel only contributes to its responsivity average when its centre irradiance ≥ this fraction of the strongest channel at that step. Drops far-off-peak ratios that would amplify noise under narrow LEDs. |
+| Output JSON gains | `meta.wavelengths_nm`, `meta.n_samples_per_channel`, and a top-level `raw_levels` block holding `(led_nm, bc8, irr8)` per step. |
+| Prompts updated | "set pE-4000 to single LED at {nm} nm" instead of "set CoolLED to ~{pct}%". |
+
+Output schema for the two consumed blocks (`corrections`,
+`responsivity_BC_per_W_m2_nm`) is unchanged, so `as7341_influx_nir.py` keeps
+loading the file without modification.
+
+### Inherent limitation
+F5 (555 nm), F7 (630 nm), and F8 (680 nm) each have only one pE-4000 LED
+nearby (550, 635, 660). The script prints a `[NOTE]` after the run listing
+channels with n_samples < 2. Not a bug — the pE-4000 simply doesn't carry
+closer alternatives. User can extend the sweep with off-peak LEDs and lower
+`--resp-min-irr-frac` if they want more samples there, accepting noisier
+ratios.
+
+### Smoke test
+`claude_wd/smoke_phase2.py` (untracked) stubs the Pi-only imports, feeds a
+synthetic wavelength-sweep dataset (Gaussian LED SPDs, FWHM 25 nm, 2 %
+noise), and runs the Phase 2 inner math. All 8 channels recovered the
+synthetic true responsivity within ~1.3 %, F5 normalisation exact.
+
+Run with `.venv/bin/python claude_wd/smoke_phase2.py` from the repo root.
+
+### What needs doing next
+1. **Hardware run.** Set up AS7341 + C-7000 + pE-4000 side-by-side and run
+   `python3 src/as7341_calibrate.py --phase responsivity`. For each LED step,
+   export the C-7000 SPD as 2-column CSV (nm, W/m²/nm) and feed the path to
+   the prompt. Expect the `[NOTE]` about F5/F7/F8 having a single contributor.
+2. **Phase 1 + Phase 3** still need their first hardware runs as well
+   (`as7341_dark_hi/lo.json` and `as7341_lux_cal_hi/lo.json` do not exist —
+   the measurement script will crash without them).
+3. Confirm pE-4000 per-LED intensity range covers both HI and LO sensitivity
+   presets without saturation/underflow. Phase 2 uses HI preset only, but
+   Phase 3's HI/LO scenes may need the source dialled accordingly.
+
+### Files touched this session
+- `src/as7341_calibrate.py` — Phase 2 rewrite.
+- `README.md` — §"Phase 2 — Spectral responsivity (VIS8)" rewritten.
+- `FSD.md` — §7 Phase 2 bullet rewritten.
+- `claude_wd/smoke_phase2.py` — new (untracked) smoke test.
+- `claude_wd/HANDOFF.md` — this section.
