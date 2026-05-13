@@ -149,11 +149,15 @@ synthetic true responsivity within ~1.3 %, F5 normalisation exact.
 Run with `.venv/bin/python claude_wd/smoke_phase2.py` from the repo root.
 
 ### What needs doing next
-1. **Hardware run.** Set up AS7341 + C-7000 + pE-4000 side-by-side and run
-   `python3 src/as7341_calibrate.py --phase responsivity`. For each LED step,
-   export the C-7000 SPD as 2-column CSV (nm, W/m²/nm) and feed the path to
-   the prompt. Expect the `[NOTE]` about F5/F7/F8 having a single contributor.
-2. **Phase 1 + Phase 3** still need their first hardware runs as well
+1. **Hardware run — Phase 2.** C-7000 irradiance data already collected (34
+   files in `C-7000_out/`). On the Pi, run:
+   ```bash
+   python3 src/as7341_calibrate.py --phase responsivity --c7000-dir C-7000_out/
+   ```
+   The script walks through all 34 steps (LED nm + strength%) in order and
+   captures only the AS7341 reading at each. No C-7000 data entry needed.
+   Expect the `[NOTE]` about F5/F7/F8 having a single contributor.
+2. **Phase 1 + Phase 3** still need their first hardware runs
    (`as7341_dark_hi/lo.json` and `as7341_lux_cal_hi/lo.json` do not exist —
    the measurement script will crash without them).
 3. Confirm pE-4000 per-LED intensity range covers both HI and LO sensitivity
@@ -165,4 +169,85 @@ Run with `.venv/bin/python claude_wd/smoke_phase2.py` from the repo root.
 - `README.md` — §"Phase 2 — Spectral responsivity (VIS8)" rewritten.
 - `FSD.md` — §7 Phase 2 bullet rewritten.
 - `claude_wd/smoke_phase2.py` — new (untracked) smoke test.
+- `claude_wd/HANDOFF.md` — this section.
+
+---
+
+## Session 5 — C-7000 data analysis + --c7000-dir (2026-05-13)
+
+Pushed as commit `a5ef6e3` on `origin/main`.
+
+### C-7000 export analysis
+
+34 CSV files in `C-7000_out/` covering 15 LED wavelengths across 2–3 intensity
+levels each. Format: Seconic C-7000 native export (multi-row metadata header +
+`Spectral Data NNN[nm],value` rows at 1 nm resolution, 380–780 nm). Unit
+confirmed W/m²/nm via lux sanity check (~4% error against C-7000 illuminance).
+
+LED wavelengths and file groupings confirmed:
+
+| LED nm | Files | Levels |
+|---|---|---|
+| 385 | 004–005 | 60%, 80% |
+| 405 | 006–007 | 51%, 80% |
+| 435 | 008–009 | 20%, 80% |
+| 460 | 010–012 | 20%, 50%, 80% |
+| 470 | 013–014 | 20%, 50% |
+| 490 | 015–016 | 20%, 80% |
+| 500 | 017–019 | 20%, 50%, 80% |
+| 525 | 020–021 | 20%, 80% |
+| 550 | 022 | 80% |
+| 580 | 023–025 | 20%, 50%, 80% |
+| 595 | 026–028 | 20%, 50%, 80% |
+| 635 | 029–030 | 50%, 80% |
+| 660 | 031–033 | 20%, 50%, 80% |
+| 740 | 034–036 | 20%, 50%, 80% |
+| 770 | 037 | 50% |
+
+Files 004–021 use `CoolLED_nm` field; files 022–037 use `CoolLED_snm`. The
+parser handles both. Files without either field are skipped with a warning
+(currently none).
+
+**550 nm vs 580 nm:** Both LED settings produce an identical SPD shape peaking
+at ~555 nm as measured by the C-7000 (< 0.2% normalised difference). Treated as
+independent measurements — both contribute to the responsivity average for
+channels near 555 nm. No action needed.
+
+**Contributing levels per channel** (with `--resp-min-irr-frac` 0.2):
+
+| Ch | λ nm | n_levels |
+|---|---|---|
+| F1 | 415 | 6 |
+| F2 | 445 | 7 |
+| F3 | 480 | 10 |
+| F4 | 515 | 11 |
+| F5 | 555 | 6 |
+| F6 | 590 | 7 |
+| F7 | 630 | 5 |
+| F8 | 680 | 6 |
+
+Missing intensity steps (405@20, 435@50, 470@80, 490@50, 525@50, 550@20/50,
+635@20) were evaluated — not needed. All channels have ≥ 5 contributing levels
+which is sufficient for a stable average.
+
+### Script changes (`src/as7341_calibrate.py`)
+
+| Change | Detail |
+|---|---|
+| Added `import re` | Required for native CSV spectral data line parsing |
+| Added `_parse_c7000_native(path)` | Parses C-7000 native export format. Handles both `CoolLED_nm` and `CoolLED_snm` field names. Returns `(led_nm, strength_pct, irr8)` or `None`. |
+| Added `_load_c7000_dir(dirpath)` | Reads all `*.csv` from a directory, skips files without LED metadata (warns), returns list sorted by `(led_nm, strength)`. |
+| Modified `run_phase2()` | When `--c7000-dir` is supplied: loads C-7000 levels, walks through each prompting "set pE-4000 to {nm} nm at {strength}%", captures AS7341 only. Original interactive path unchanged. |
+| Added `--c7000-dir` arg | Points to directory of pre-collected C-7000 CSVs. |
+
+### What needs doing next
+1. **Hardware run — Phase 2** (see Session 4 "What needs doing next" above).
+2. **Phase 1 + Phase 3** hardware runs still pending.
+3. **Phase 3 lux scenes**: files 022–028 (CCT 1575–4940 K range) look like
+   candidate lux scenes from the C-7000 side. If AS7341 readings were captured
+   alongside, those could be used directly for Phase 3. Confirm with user.
+
+### Files touched this session
+- `src/as7341_calibrate.py` — `_parse_c7000_native`, `_load_c7000_dir`,
+  `--c7000-dir`, modified `run_phase2()`.
 - `claude_wd/HANDOFF.md` — this section.
