@@ -588,6 +588,10 @@ def run_phase3(s, args):
                 if peak <= lo_th:
                     print(f"  [WARN] Very low signal (peak={int(peak)}) — "
                           "increase intensity or switch to HI preset.")
+                    choice = input("  Retry [Y], skip scene [s]? ").strip().lower()
+                    if choice == "s":
+                        scene_skipped = True
+                    break
                 break
 
             if scene_skipped:
