@@ -577,7 +577,7 @@ def run_phase3(s, args):
             while True:
                 input("  Position instruments for this scene, then press Enter to capture...")
                 vis_raw, clear_raw, _ = avg_frames(s, args.lux_avg)
-                peak = max(vis_raw + [clear_raw])
+                peak = max(vis_raw)  # VIS8 only — CLEAR is not in the lux model
                 if peak >= sat_th:
                     print(f"  [WARN] Near saturation (peak={int(peak)}, FS={fs}) — "
                           "reduce intensity or use a lower-sensitivity preset.")
