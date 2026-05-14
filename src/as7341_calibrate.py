@@ -422,17 +422,26 @@ def run_phase2(s, args):
         for k, (led_nm, strength, irr8) in enumerate(c7000_levels):
             str_label = f" at {strength}%" if strength is not None else ""
             print(f"\n--- Step {k+1}/{n}: set pE-4000 to {led_nm} nm{str_label} ---")
+            skip = False
             while True:
                 input("  Press Enter to capture AS7341 reading...")
                 vis_raw, _, _ = avg_frames(s, args.resp_avg)
                 peak = max(vis_raw)
                 if peak >= sat_th:
-                    print(f"  [WARN] Saturating (peak={int(peak)}, FS={fs}) — reduce intensity.")
+                    print(f"  [WARN] Saturating (peak={int(peak)}, FS={fs}) — "
+                          "cannot use this reading (C-7000 irradiance was at the original intensity).")
+                    choice = input("  Skip this step [s] or retry after adjusting [Enter]: ").strip().lower()
+                    if choice == "s":
+                        skip = True
+                        break
                     continue
                 if peak <= lo_th:
                     print(f"  [WARN] Signal too low (peak={int(peak)}) — increase intensity.")
                     continue
                 break
+            if skip:
+                print(f"  Step skipped.")
+                continue
             vis = [max(0.0, v - d) for v, d in zip(vis_raw, dv)]
             bc8 = [v / denom for v in vis]
             print(f"  BasicCounts: { {b: round(x,4) for b,x in zip(BANDS8, bc8)} }")
