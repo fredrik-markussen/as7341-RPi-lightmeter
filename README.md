@@ -118,6 +118,21 @@ This walks through three phases:
 - 100 samples per preset; medians written with full meta (gain, ATIME, ASTEP, timestamp).
 - Outputs: `as7341_dark_hi.json`, `as7341_dark_lo.json`.
 
+Run on the Pi:
+```bash
+python3 src/as7341_calibrate.py --phase dark
+```
+
+Useful flags:
+```
+--dark-samples 200     # more samples for a quieter median (default 100)
+--out-dir /path/to/    # write cal files to a different directory
+```
+
+The standalone `src/as7341_dark_capture.py` is a smaller utility for ad-hoc
+dark captures with custom settings; for the standard workflow prefer the guided
+script above.
+
 ### Phase 2 — Spectral responsivity (VIS8)
 
 - AS7341 + Seconic C-7000 side-by-side under a CoolLED pE-4000 in
@@ -126,14 +141,13 @@ This walks through three phases:
 - Wavelength sweep: 12 in-VIS8-range pE-4000 LEDs by default
   (`405, 435, 460, 470, 490, 500, 525, 550, 580, 595, 635, 660` nm). The
   pE-4000 carries 16 LEDs grouped across 4 channels (365–770 nm); the default
-  list picks the LEDs that land inside the AS7341 VIS8 passband. Override with
-  `--resp-wavelengths 405,460,525,...`.
+  list picks the LEDs that land inside the AS7341 VIS8 passband.
 - For each LED step, capture the AS7341 reading and either provide a C-7000
   CSV (`wavelength_nm, irradiance_W_m2_nm`) or type the channel-centre
-  irradiances. Per-channel responsivity is then averaged across only the LED
-  steps where that channel actually sees significant power (controlled by
-  `--resp-min-irr-frac`, default 0.2 of the strongest channel at that step) —
-  this rejects the far-off-peak ratios that would otherwise amplify noise.
+  irradiances. Per-channel responsivity is averaged across only the LED steps
+  where that channel sees significant power (`--resp-min-irr-frac`, default 0.2
+  of the strongest channel at that step) — this rejects far-off-peak ratios
+  that would amplify noise.
 - **Pre-collected C-7000 data:** If you already have the C-7000 exports in the
   repo (`C-7000_out/`), pull the repo onto the Pi and use `--c7000-dir` to skip
   manual SPD entry — the script reads irradiance directly from the CSVs and only
@@ -150,45 +164,47 @@ This walks through three phases:
     spectral irradiance per VIS8 channel (`irr_*` CSV columns,
     `irradiance` Influx field).
   Plus `meta.wavelengths_nm`, `meta.n_samples_per_channel`, and a `raw_levels`
-  block holding the per-step (LED nm, BasicCounts, irradiance) for post-hoc
-  inspection. The main script picks the corrections and absolute responsivity
-  up automatically at startup; without the file, datasheet defaults are used
-  for `corrections` and absolute irradiance is not emitted.
+  block for post-hoc inspection.
 - NIR (~910 nm) is **not** measured here — the C-7000 covers 380–780 nm only
   and the pE-4000 stops at 770 nm. The runtime keeps a datasheet default for
-  NIR composition correction (overridable via a `nir` key under
-  `corrections`); absolute NIR irradiance is never emitted.
+  NIR composition correction (overridable via a `nir` key under `corrections`).
+
+Useful flags:
+```
+--resp-wavelengths 405,460,525,...   # custom LED sweep (default 12 LEDs)
+--resp-min-irr-frac 0.1             # lower threshold to include more off-peak steps
+--resp-avg 20                        # frames averaged per AS7341 capture (default 20)
+```
 
 ### Phase 3 — Lux model
 
-- AS7341 + C-7000 side-by-side, same angle, no shadows.
-- Default 12 diverse scenes per preset (≥ 10 needed for a stable fit).
+- AS7341 + C-7000 side-by-side, same angle, no shadows. Use diverse light
+  scenes spanning the lux range you expect to measure.
+- Default 12 scenes per preset (≥ 10 needed for a stable fit). HI preset
+  saturates above ~5 000 lx — use those scenes for LO only.
 - VIS8 ridge regression with intercept (α=0.01); MAD outlier rejection;
-  K-fold CV reports goodness-of-fit. `--lux-nnls` constrains weights to be
-  non-negative if the unconstrained fit goes wild.
+  K-fold CV reports goodness-of-fit.
 - Outputs: `as7341_lux_cal_hi.json`, `as7341_lux_cal_lo.json`.
 
-### Running individual phases
-
+Run on the Pi (both presets in one go):
 ```bash
-python3 src/as7341_calibrate.py --phase dark            # Phase 1 only
-python3 src/as7341_calibrate.py --phase responsivity    # Phase 2 only
-python3 src/as7341_calibrate.py --phase lux             # Phase 3 only
-python3 src/as7341_calibrate.py --phase lux --preset hi # re-run HI lux only
+python3 src/as7341_calibrate.py --phase lux
 ```
 
-Useful flags for Phase 3:
+Re-run a single preset:
+```bash
+python3 src/as7341_calibrate.py --phase lux --preset hi
+python3 src/as7341_calibrate.py --phase lux --preset lo
+```
 
+Useful flags:
 ```
 --lux-scenes 15        # collect more scenes (default 12)
 --lux-ridge 0.0        # plain OLS instead of ridge (only with plenty of scenes)
 --lux-nnls             # constrain weights to be non-negative
 --lux-kfold 5          # K-fold CV folds
+--lux-avg 10           # frames averaged per capture (default 10)
 ```
-
-The standalone `src/as7341_dark_capture.py` is a smaller utility for ad-hoc
-dark captures with custom settings; it defaults to writing
-`as7341_dark_hi.json`. For the standard workflow, prefer the guided script.
 
 ---
 
