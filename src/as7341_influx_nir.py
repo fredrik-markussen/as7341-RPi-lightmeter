@@ -907,11 +907,11 @@ def main():
     print("AS7341 -> Influx v1 fan-out:")
     for ent in sessions: print("  -", ent["label"])
     print(f"Device={DEVICE}, AVG={AVG}, PERIOD={PERIOD}s")
-    if AUTORANGE_SUN_ENABLE and not SENS_SUN["cal_file"].exists():
+    sun_enabled = AUTORANGE_SUN_ENABLE and SENS_SUN["cal_file"].exists()
+    if AUTORANGE_SUN_ENABLE and not sun_enabled:
         print(f"[WARN] AUTORANGE_SUN_ENABLE=true but {SENS_SUN['cal_file'].name} not found — SUN tier disabled.")
-        AUTORANGE_SUN_ENABLE = False
     sun_str = (f" | SUN: gain={SENS_SUN['gain']}, IT={SENS_SUN['integration_time_ms']}ms"
-               if AUTORANGE_SUN_ENABLE else " | SUN: disabled")
+               if sun_enabled else " | SUN: disabled")
     print(f"Sensitivity HI: gain={SENS_HI['gain']}, IT={SENS_HI['integration_time_ms']}ms | "
           f"LO: gain={SENS_LO['gain']}, IT={SENS_LO['integration_time_ms']}ms{sun_str}")
     print(f"Autorange: {'ON' if AUTORANGE_ENABLE else 'OFF'}, hyst={AUTORANGE_HYST}, "
@@ -949,7 +949,7 @@ def main():
                     if active_preset == "hi":
                         sens_cfg = apply_sensitivity(s, SENS_LO)
                         active_preset = "lo"; switched = True
-                    elif active_preset == "lo" and AUTORANGE_SUN_ENABLE:
+                    elif active_preset == "lo" and sun_enabled:
                         sens_cfg = apply_sensitivity(s, SENS_SUN)
                         active_preset = "sun"; switched = True
                     ar_sat_cnt = 0
