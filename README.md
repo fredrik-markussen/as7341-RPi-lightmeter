@@ -134,6 +134,14 @@ This walks through three phases:
   steps where that channel actually sees significant power (controlled by
   `--resp-min-irr-frac`, default 0.2 of the strongest channel at that step) —
   this rejects the far-off-peak ratios that would otherwise amplify noise.
+- **Pre-collected C-7000 data:** If you already have the C-7000 exports in the
+  repo (`C-7000_out/`), pull the repo onto the Pi and use `--c7000-dir` to skip
+  manual SPD entry — the script reads irradiance directly from the CSVs and only
+  asks you to capture the AS7341 side:
+  ```bash
+  git pull
+  python3 src/as7341_calibrate.py --phase responsivity --c7000-dir C-7000_out/
+  ```
 - Output: `as7341_responsivity.json` with two blocks:
   - `corrections` — per-channel multipliers normalised to 555 nm = 1.0,
     used to correct the relative spectrum (`rel_intensity`).
