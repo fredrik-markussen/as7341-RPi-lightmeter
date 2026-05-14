@@ -611,9 +611,10 @@ def run_phase3(s, args):
                     print("  Please enter a number.")
             rows.append({"bc8": bc8, "lux": lux})
 
-        if len(rows) < MIN_LUX_SCENES_FOR_FIT:
+        fit_min = min(args.lux_scenes, MIN_LUX_SCENES_FOR_FIT)
+        if len(rows) < fit_min:
             print(f"\n[ERROR] Only {len(rows)} usable scene(s) collected for preset {preset_name.upper()}; "
-                  f"need ≥ {MIN_LUX_SCENES_FOR_FIT}. Skipping fit — re-run this preset with more scenes.")
+                  f"need ≥ {fit_min}. Skipping fit — re-run this preset with more scenes.")
             continue
 
         X = np.array([r["bc8"] for r in rows])
