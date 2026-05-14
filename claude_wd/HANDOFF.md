@@ -251,3 +251,100 @@ which is sufficient for a stable average.
 - `src/as7341_calibrate.py` — `_parse_c7000_native`, `_load_c7000_dir`,
   `--c7000-dir`, modified `run_phase2()`.
 - `claude_wd/HANDOFF.md` — this section.
+
+---
+
+## Session 6 — Hardware calibration runs + SUN preset (2026-05-14)
+
+Pushed as commit `bab83f1` on `origin/main`.
+
+### C-7000 dataset expanded
+
+New files 038–063 added to `C-7000_out/` (now committed to repo):
+
+| Files | Content |
+|---|---|
+| 038–045 | Single-LED fills: 405@20, 435@50, 470@80, 490@50, 525@50, 550@20/50, 635@20 — fills all previously missing intensity steps |
+| 047–051 | CoolLED White at 10/20/50/60/80 % (592–3240 lux) — Phase 3 lux scenes |
+| 052–056 | Direct sunlight ~100k lux @ 5400 K — Phase 3 LO/SUN lux scenes |
+| 060–063 | Mixed office lighting 1140–2560 lux @ 2600–4200 K — Phase 3 HI lux scenes |
+
+Phase 2 now uses 42 single-LED steps (up from 34). White/sunlight/office files are
+correctly skipped by `_load_c7000_dir` (no numeric `CoolLED_nm`).
+
+### Hardware calibration completed (RPi-1)
+
+All three phases run and cal files committed to repo root:
+
+| File | Result |
+|---|---|
+| `as7341_dark_hi.json` | All zeros — clean sensor |
+| `as7341_dark_lo.json` | All zeros — clean sensor |
+| `as7341_responsivity.json` | Phase 2 complete — empirical corrections derived from 42 LED steps |
+| `as7341_lux_cal_hi.json` | Phase 3 HI — Train R²=0.9936, CV R²=0.9851, RMSE=57 lux |
+| `as7341_lux_cal_lo.json` | Phase 3 LO — Train R²=0.9970, CV R²=0.9569, RMSE=1725 lux |
+
+Phase 2 responsivity highlights:
+- nm630/nm680 corrections (0.40/0.18) are far from datasheet (1.43/2.00) — silicon has
+  much higher sensitivity in the red. This is physically expected and validated.
+- All channels had ≥ 4 contributing LED steps; nm630/nm680 had 4–5 (limited by pE-4000
+  LED coverage near those wavelengths).
+
+Phase 3 HI took three attempts:
+- Run 1 (ridge=0.01): CV R²=0.80 — overfitting, all-zeros scene accepted due to bug
+- Run 2 (ridge=0.05): CV R²=0.77 — worse; scene 11 was a bad read (nm680 anomalously low)
+- Run 3 (nnls=false, default ridge): CV R²=0.985 — good dataset, no bad scenes
+
+### Bug fixes during session
+
+| Fix | Commit |
+|---|---|
+| Phase 2 `--c7000-dir`: saturation now offers skip [s] instead of looping forever | `4586ce7` |
+| Saturation threshold raised from 87.5% to 95% of FS (both scripts) | `e1b16d8` |
+| Phase 3 low-signal now offers skip [s] / retry (previously accepted silently) | `50c4a7e` |
+
+### SUN preset added
+
+Third sensitivity tier for direct sunlight: GAIN_4X, IT=10ms (same as LO).
+- LO tops out at ~54k lux; SUN covers ~700 lux – ~217k lux
+- Disabled by default; enable via `.env`: `AUTORANGE_SUN_ENABLE=true`
+- Switching chain: HI → LO → SUN (up on sat), SUN → LO → HI (down on underflow)
+- Startup warns and falls back to 2-tier if enabled but cal file missing
+- Calibrate with: `--preset sun` (dark + lux phases only; responsivity is preset-independent)
+
+### Other changes
+
+- `C-7000_out/*.png/jpg` added to `.gitignore` (auto-generated plots, not versioned)
+- `.env` removed from tracking and added to `.gitignore` (contains device endpoints)
+- README updated: Phase 1–3 each have explicit run commands and flag reference
+- `config/sample.env` updated with `AUTORANGE_SUN_ENABLE` and `SENS_SUN_*` entries
+
+### Current file state
+
+| File | Status |
+|---|---|
+| `src/as7341_influx_nir.py` | Complete — 3-tier auto-sensitivity |
+| `src/as7341_calibrate.py` | Complete — `--preset` accepts hi/lo/sun/both/all |
+| `as7341_dark_hi/lo.json` | Generated on RPi-1 |
+| `as7341_lux_cal_hi/lo.json` | Generated on RPi-1 |
+| `as7341_responsivity.json` | Generated on RPi-1 |
+| `as7341_dark_sun.json` | **Does not exist** — run `--phase dark --preset sun` |
+| `as7341_lux_cal_sun.json` | **Does not exist** — run `--phase lux --preset sun` |
+
+### What needs doing next
+
+1. **SUN calibration** (hardware required, outdoors):
+   ```bash
+   python3 src/as7341_calibrate.py --phase dark --preset sun
+   python3 src/as7341_calibrate.py --phase lux  --preset sun
+   ```
+   Use 12+ scenes across 5k–200k lux. The sunlight C-7000 files (052–056) are
+   reference-only; Phase 3 still requires live AS7341 captures alongside the C-7000.
+   After calibration, set `AUTORANGE_SUN_ENABLE=true` in `.env`.
+
+2. **Start the measurement script** — all HI/LO cal files exist:
+   ```bash
+   python3 src/as7341_influx_nir.py
+   # or
+   sudo systemctl start as7341
+   ```
