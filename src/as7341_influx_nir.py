@@ -45,10 +45,11 @@ MEAS = "LIGHT"                # InfluxDB measurement name for spectral data poin
 
 # Auto-Sensitivity Switching
 # --------------------------
-AUTORANGE_ENABLE   = True    # Switch between HI/LO presets automatically
-AUTORANGE_HYST     = 3       # Consecutive frames above/below threshold before switching
-AUTORANGE_SAT_FRAC = 0.875   # Switch to LO when peak raw signal >= this fraction of ADC FS
-AUTORANGE_LOW_FRAC = 0.003   # Switch to HI when peak raw signal <= this fraction of ADC FS
+AUTORANGE_ENABLE     = True    # Switch between presets automatically
+AUTORANGE_SUN_ENABLE = False   # Enable third SUN tier (requires as7341_lux_cal_sun.json)
+AUTORANGE_HYST       = 3       # Consecutive frames above/below threshold before switching
+AUTORANGE_SAT_FRAC   = 0.875   # Step up (brighter preset) when peak >= this fraction of ADC FS
+AUTORANGE_LOW_FRAC   = 0.003   # Step down (dimmer preset) when peak <= this fraction of ADC FS
 
 # Measurement Averaging and Timing
 # ---------------------------------
@@ -112,13 +113,19 @@ SENS_LO = {                                 # Bright light — low gain, short i
     "dark_file": BASE_DIR / "as7341_dark_lo.json",
     "cal_file":  BASE_DIR / "as7341_lux_cal_lo.json",
 }
+SENS_SUN = {                                # Direct sunlight — very low gain, short integration
+    "integration_time_ms": 10,
+    "gain": Gain.GAIN_4X,
+    "dark_file": BASE_DIR / "as7341_dark_sun.json",
+    "cal_file":  BASE_DIR / "as7341_lux_cal_sun.json",
+}
 
 # .env Overrides (optional — copy config/sample.env to .env in project root)
 # ---------------------------------------------------------------------------
 def _apply_env(path: Path):
     """Load key=value pairs from a .env file and override config globals above."""
     global DEVICE, ENDPOINTS, AVG, PERIOD, CSV_ALWAYS
-    global AUTORANGE_ENABLE, AUTORANGE_HYST, AUTORANGE_SAT_FRAC, AUTORANGE_LOW_FRAC
+    global AUTORANGE_ENABLE, AUTORANGE_SUN_ENABLE, AUTORANGE_HYST, AUTORANGE_SAT_FRAC, AUTORANGE_LOW_FRAC
     if not path.exists():
         return
     env = {}
@@ -134,15 +141,18 @@ def _apply_env(path: Path):
     if "INFLUX_ENDPOINTS"   in env: ENDPOINTS          = [tuple(e) for e in json.loads(env["INFLUX_ENDPOINTS"])]
     if "AVG"                in env: AVG                = int(env["AVG"])
     if "PERIOD"             in env: PERIOD             = float(env["PERIOD"])
-    if "AUTORANGE_ENABLE"   in env: AUTORANGE_ENABLE   = env["AUTORANGE_ENABLE"].lower() in ("true","1","yes")
-    if "AUTORANGE_HYST"     in env: AUTORANGE_HYST     = int(env["AUTORANGE_HYST"])
-    if "AUTORANGE_SAT_FRAC" in env: AUTORANGE_SAT_FRAC = float(env["AUTORANGE_SAT_FRAC"])
-    if "AUTORANGE_LOW_FRAC" in env: AUTORANGE_LOW_FRAC = float(env["AUTORANGE_LOW_FRAC"])
-    if "CSV_ALWAYS"         in env: CSV_ALWAYS         = env["CSV_ALWAYS"].lower() in ("true","1","yes")
-    if "SENS_HI_IT_MS"      in env: SENS_HI["integration_time_ms"] = int(env["SENS_HI_IT_MS"])
-    if "SENS_HI_GAIN"       in env: SENS_HI["gain"]                = getattr(Gain, env["SENS_HI_GAIN"])
-    if "SENS_LO_IT_MS"      in env: SENS_LO["integration_time_ms"] = int(env["SENS_LO_IT_MS"])
-    if "SENS_LO_GAIN"       in env: SENS_LO["gain"]                = getattr(Gain, env["SENS_LO_GAIN"])
+    if "AUTORANGE_ENABLE"     in env: AUTORANGE_ENABLE     = env["AUTORANGE_ENABLE"].lower() in ("true","1","yes")
+    if "AUTORANGE_SUN_ENABLE" in env: AUTORANGE_SUN_ENABLE = env["AUTORANGE_SUN_ENABLE"].lower() in ("true","1","yes")
+    if "AUTORANGE_HYST"       in env: AUTORANGE_HYST       = int(env["AUTORANGE_HYST"])
+    if "AUTORANGE_SAT_FRAC"   in env: AUTORANGE_SAT_FRAC   = float(env["AUTORANGE_SAT_FRAC"])
+    if "AUTORANGE_LOW_FRAC"   in env: AUTORANGE_LOW_FRAC   = float(env["AUTORANGE_LOW_FRAC"])
+    if "CSV_ALWAYS"           in env: CSV_ALWAYS           = env["CSV_ALWAYS"].lower() in ("true","1","yes")
+    if "SENS_HI_IT_MS"        in env: SENS_HI["integration_time_ms"]  = int(env["SENS_HI_IT_MS"])
+    if "SENS_HI_GAIN"         in env: SENS_HI["gain"]                 = getattr(Gain, env["SENS_HI_GAIN"])
+    if "SENS_LO_IT_MS"        in env: SENS_LO["integration_time_ms"]  = int(env["SENS_LO_IT_MS"])
+    if "SENS_LO_GAIN"         in env: SENS_LO["gain"]                 = getattr(Gain, env["SENS_LO_GAIN"])
+    if "SENS_SUN_IT_MS"       in env: SENS_SUN["integration_time_ms"] = int(env["SENS_SUN_IT_MS"])
+    if "SENS_SUN_GAIN"        in env: SENS_SUN["gain"]                = getattr(Gain, env["SENS_SUN_GAIN"])
 
 _apply_env(BASE_DIR / ".env")
 
@@ -837,7 +847,7 @@ def main():
     dark_clear    = sens_cfg["dark_clear"]
     dark_nir      = sens_cfg["dark_nir"]
     b0, w         = sens_cfg["b0"], sens_cfg["w"]
-    ar_hi_cnt = ar_lo_cnt = 0                  # Hysteresis counters for sensitivity switching
+    ar_sat_cnt = ar_low_cnt = 0                 # Hysteresis counters for sensitivity switching
 
     # ========================================
     # INITIALIZATION: InfluxDB Connections
@@ -897,8 +907,13 @@ def main():
     print("AS7341 -> Influx v1 fan-out:")
     for ent in sessions: print("  -", ent["label"])
     print(f"Device={DEVICE}, AVG={AVG}, PERIOD={PERIOD}s")
+    if AUTORANGE_SUN_ENABLE and not SENS_SUN["cal_file"].exists():
+        print(f"[WARN] AUTORANGE_SUN_ENABLE=true but {SENS_SUN['cal_file'].name} not found — SUN tier disabled.")
+        AUTORANGE_SUN_ENABLE = False
+    sun_str = (f" | SUN: gain={SENS_SUN['gain']}, IT={SENS_SUN['integration_time_ms']}ms"
+               if AUTORANGE_SUN_ENABLE else " | SUN: disabled")
     print(f"Sensitivity HI: gain={SENS_HI['gain']}, IT={SENS_HI['integration_time_ms']}ms | "
-          f"LO: gain={SENS_LO['gain']}, IT={SENS_LO['integration_time_ms']}ms")
+          f"LO: gain={SENS_LO['gain']}, IT={SENS_LO['integration_time_ms']}ms{sun_str}")
     print(f"Autorange: {'ON' if AUTORANGE_ENABLE else 'OFF'}, hyst={AUTORANGE_HYST}, "
           f"sat_frac={AUTORANGE_SAT_FRAC}, low_frac={AUTORANGE_LOW_FRAC}")
     print(f"Starting in HI sensitivity: ATIME={atime}, ASTEP={astep}, IT={actual_it_ms:.1f}ms, ADC_FS={fs}")
@@ -923,19 +938,29 @@ def main():
             if AUTORANGE_ENABLE:
                 peak_raw = max(vis_raw + [nir_raw, clear_raw])
                 if peak_raw >= AUTORANGE_SAT_FRAC * fs:
-                    ar_hi_cnt += 1; ar_lo_cnt = 0
+                    ar_sat_cnt += 1; ar_low_cnt = 0
                 elif peak_raw <= AUTORANGE_LOW_FRAC * fs:
-                    ar_lo_cnt += 1; ar_hi_cnt = 0
+                    ar_low_cnt += 1; ar_sat_cnt = 0
                 else:
-                    ar_hi_cnt = ar_lo_cnt = 0
+                    ar_sat_cnt = ar_low_cnt = 0
 
                 switched = False
-                if ar_hi_cnt >= AUTORANGE_HYST and active_preset != "lo":
-                    sens_cfg = apply_sensitivity(s, SENS_LO)
-                    active_preset = "lo"; ar_hi_cnt = 0; switched = True
-                elif ar_lo_cnt >= AUTORANGE_HYST and active_preset != "hi":
-                    sens_cfg = apply_sensitivity(s, SENS_HI)
-                    active_preset = "hi"; ar_lo_cnt = 0; switched = True
+                if ar_sat_cnt >= AUTORANGE_HYST:
+                    if active_preset == "hi":
+                        sens_cfg = apply_sensitivity(s, SENS_LO)
+                        active_preset = "lo"; switched = True
+                    elif active_preset == "lo" and AUTORANGE_SUN_ENABLE:
+                        sens_cfg = apply_sensitivity(s, SENS_SUN)
+                        active_preset = "sun"; switched = True
+                    ar_sat_cnt = 0
+                elif ar_low_cnt >= AUTORANGE_HYST:
+                    if active_preset == "sun":
+                        sens_cfg = apply_sensitivity(s, SENS_LO)
+                        active_preset = "lo"; switched = True
+                    elif active_preset == "lo":
+                        sens_cfg = apply_sensitivity(s, SENS_HI)
+                        active_preset = "hi"; switched = True
+                    ar_low_cnt = 0
 
                 if switched:
                     actual_it_ms = sens_cfg["it_ms"]; fs = sens_cfg["fs"]; gnum = sens_cfg["gnum"]

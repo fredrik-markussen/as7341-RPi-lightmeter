@@ -37,10 +37,11 @@ GAIN_MULT = {
     Gain.GAIN_128X:128.0,Gain.GAIN_256X:256.0,Gain.GAIN_512X:512.0,
 }
 
-# Default preset settings — match SENS_HI / SENS_LO in as7341_influx_nir.py
+# Default preset settings — match SENS_HI / SENS_LO / SENS_SUN in as7341_influx_nir.py
 PRESETS = {
-    "hi": {"integration_time_ms": 50,  "gain_str": "GAIN_256X"},
-    "lo": {"integration_time_ms": 10,  "gain_str": "GAIN_16X"},
+    "hi":  {"integration_time_ms": 50,  "gain_str": "GAIN_256X"},
+    "lo":  {"integration_time_ms": 10,  "gain_str": "GAIN_16X"},
+    "sun": {"integration_time_ms": 10,  "gain_str": "GAIN_4X"},
 }
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -207,7 +208,7 @@ def run_phase1(s, args):
     print("You will capture dark offsets for each sensitivity preset.")
     print("Keep the sensor covered throughout both captures.")
 
-    presets = ["hi", "lo"] if args.preset == "both" else [args.preset]
+    presets = {"both": ["hi", "lo"], "all": ["hi", "lo", "sun"]}.get(args.preset, [args.preset])
     for preset_name in presets:
         p = PRESETS[preset_name]
         atime, astep, it_ms, fs, _ = apply_preset(s, preset_name)
@@ -553,7 +554,7 @@ def run_phase3(s, args):
         print(f"[WARN] {args.lux_scenes} scenes is below the recommended minimum "
               f"({MIN_LUX_SCENES_FOR_FIT}). Consider --lux-scenes {MIN_LUX_SCENES_FOR_FIT}+.")
 
-    presets = ["hi", "lo"] if args.preset == "both" else [args.preset]
+    presets = {"both": ["hi", "lo"], "all": ["hi", "lo", "sun"]}.get(args.preset, [args.preset])
 
     for preset_name in presets:
         random.seed(42)  # per-preset deterministic shuffle for k-fold
@@ -579,7 +580,7 @@ def run_phase3(s, args):
                 peak = max(vis_raw + [clear_raw])
                 if peak >= sat_th:
                     print(f"  [WARN] Near saturation (peak={int(peak)}, FS={fs}) — "
-                          "reduce intensity or switch to LO preset.")
+                          "reduce intensity or use a lower-sensitivity preset.")
                     choice = input("  Retry [Y], skip scene [s]? ").strip().lower()
                     if choice == "s":
                         scene_skipped = True
@@ -587,7 +588,7 @@ def run_phase3(s, args):
                     continue  # default = retry
                 if peak <= lo_th:
                     print(f"  [WARN] Very low signal (peak={int(peak)}) — "
-                          "increase intensity or switch to HI preset.")
+                          "increase intensity or use a higher-sensitivity preset.")
                     choice = input("  Retry [Y], skip scene [s]? ").strip().lower()
                     if choice == "s":
                         scene_skipped = True
@@ -669,8 +670,8 @@ def main():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     ap.add_argument("--phase",   choices=["all","dark","responsivity","lux"], default="all")
-    ap.add_argument("--preset",  choices=["hi","lo","both"], default="both",
-                    help="Which sensitivity preset to calibrate (dark and lux phases)")
+    ap.add_argument("--preset",  choices=["hi","lo","sun","both","all"], default="both",
+                    help="Preset(s) to calibrate: hi, lo, sun, both (hi+lo), all (hi+lo+sun)")
     ap.add_argument("--out-dir", default=str(BASE_DIR),
                     help="Directory to write output JSON files")
 
