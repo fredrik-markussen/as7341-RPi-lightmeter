@@ -413,7 +413,7 @@ def run_phase2(s, args):
         print(f"[WARN] {dark_path.name} not found — dark correction inactive for this phase.")
     dv, dc, _ = dark_offsets(darkJ, s, atime, astep)
     denom = max(1e-9, gnum * it_ms)
-    sat_th = 0.875 * fs; lo_th = 0.003 * fs
+    sat_th = 0.95 * fs; lo_th = 0.003 * fs
 
     level_data = []  # list of dicts: {"led_nm", "bc8", "irr8"}
 
@@ -567,7 +567,7 @@ def run_phase3(s, args):
             print(f"[WARN] {dark_path.name} not found — dark correction inactive.")
         dv, dc, _ = dark_offsets(darkJ, s, atime, astep)
         denom = max(1e-9, gnum * it_ms)
-        sat_th = 0.875 * fs; lo_th = 0.003 * fs
+        sat_th = 0.95 * fs; lo_th = 0.003 * fs
 
         rows = []
         for i in range(1, args.lux_scenes + 1):
