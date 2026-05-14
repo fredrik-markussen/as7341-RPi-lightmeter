@@ -333,18 +333,53 @@ Third sensitivity tier for direct sunlight: GAIN_4X, IT=10ms (same as LO).
 
 ### What needs doing next
 
-1. **SUN calibration** (hardware required, outdoors):
-   ```bash
-   python3 src/as7341_calibrate.py --phase dark --preset sun
-   python3 src/as7341_calibrate.py --phase lux  --preset sun
-   ```
-   Use 12+ scenes across 5k–200k lux. The sunlight C-7000 files (052–056) are
-   reference-only; Phase 3 still requires live AS7341 captures alongside the C-7000.
-   After calibration, set `AUTORANGE_SUN_ENABLE=true` in `.env`.
+Nothing blocking — system is fully operational on RPi-1.
 
-2. **Start the measurement script** — all HI/LO cal files exist:
-   ```bash
-   python3 src/as7341_influx_nir.py
-   # or
-   sudo systemctl start as7341
-   ```
+Optional future work:
+- Re-run SUN lux cal with more scenes (currently 6, CV R²=0.74) if better outdoor accuracy is needed
+- CCT / CRI estimation (FSD §8)
+- InfluxDB v2/v3 protocol support
+- Grafana dashboard templates (separate repo)
+- CSV archive manual replay path for prolonged outages
+
+---
+
+## Session 7 — SUN calibration + systemd service (2026-05-14)
+
+### SUN calibration complete
+
+`as7341_lux_cal_sun.json` generated on RPi-1 (6 scenes, 29,500–122,800 lux):
+- Train R²=0.985, CV R²=0.740, RMSE=17,363 lux
+- 3 negative coefficients (ridge/NNLS would help but fit is usable)
+- `AUTORANGE_SUN_ENABLE=true` set in `.env`
+
+Bugs fixed during SUN calibration run:
+- Phase 3 saturation check was including CLEAR channel — CLEAR saturates ~3× earlier
+  than VIS8 in sunlight but is not in the lux model. Fixed to VIS8-only. (`0014c0d`)
+- `--lux-scenes` below MIN_LUX_SCENES_FOR_FIT (10) now works — fit minimum is
+  `min(requested, 10)` so `--lux-scenes 6` proceeds if all scenes collected. (`905424e`)
+- `UnboundLocalError` for `AUTORANGE_SUN_ENABLE` in `main()` — Python treated it as
+  local due to assignment. Replaced with local `sun_enabled` variable. (`45cbe99`)
+
+### systemd service installed on RPi-1
+
+`/etc/systemd/system/as7341.service` — enabled, running, starts on boot.
+Logs: `journalctl -u as7341 -f`
+
+### `.env` notes
+
+`.env` was deleted from Pi working directory when the "remove from tracking" commit
+was pulled. Recreated manually via nano with:
+- `INFLUX_ENDPOINTS`: localhost lightmeter + two remote AAB endpoints
+- `AUTORANGE_SUN_ENABLE=true`
+
+### Current system state (RPi-1)
+
+| Component | Status |
+|---|---|
+| Measurement script | Running as systemd service, auto-starts on boot |
+| HI/LO/SUN cal files | All present and loaded |
+| Local InfluxDB | Writing every cycle |
+| Remote InfluxDB | Fan-out to 10.239.99.73 and 10.239.99.97 |
+| Auto-sensitivity | 3-tier HI→LO→SUN active |
+| Grafana | Confirmed receiving data (spectral irradiance visible) |
