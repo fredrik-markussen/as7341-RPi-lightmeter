@@ -549,7 +549,7 @@ def compute_pfd(irr_vis8) -> float | None:
                for irr, wl, bw in zip(irr_vis8, WLS9[:8], BANDWIDTHS_NM))
 
 
-def build_influx_lines(ts_ns:int, rel_vis8, rel_nir, lux_value, clear_value, irr_vis8=None, pfd=None):
+def build_influx_lines(ts_ns:int, rel_vis8, lux_value, clear_value, irr_vis8=None, pfd=None):
     """
     Build InfluxDB line protocol payload from measurement data.
 
@@ -580,9 +580,6 @@ def build_influx_lines(ts_ns:int, rel_vis8, rel_nir, lux_value, clear_value, irr
     else:
         lines = [f"{INFLUX_TEMPLATES[i]} rel_intensity={v:.6f},irradiance={irr_vis8[i]:.6e} {ts_ns}"
                  for i, v in enumerate(rel_vis8)]
-
-    # NIR as separate point with wavelength_nm=910 tag
-    lines.append(f"{INFLUX_TEMPLATES[8]} rel_intensity={rel_nir:.6f} {ts_ns}")
 
     # Lux measurement with both lux (calibrated) and clear (raw) fields
     # Format: "LIGHT_LUX,Device=RPi-1,method=lin_basic lux=123.456,clear=12345[,pfd=1.2345] 1234..."
@@ -1040,7 +1037,7 @@ def main():
             # -------- Build payload --------
             pfd = compute_pfd(irr_vis8)
             ts = time.time_ns()
-            lines = build_influx_lines(ts, rel_vis8, rel_nir, lux, clear, irr_vis8, pfd)
+            lines = build_influx_lines(ts, rel_vis8, lux, clear, irr_vis8, pfd)
             payload = "\n".join(lines)
 
             sample_idx += 1
