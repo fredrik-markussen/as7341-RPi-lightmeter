@@ -50,10 +50,14 @@ A short functional spec lives in [FSD.md](FSD.md).
 
 The AS7341 contains 10 independent photodetector channels on a single silicon
 die. Each channel is a photodiode — a semiconductor junction that releases
-electrons when struck by photons (the photoelectric effect). The rate of
+electrons when struck by photons (the [photoelectric effect](https://thescienceandmathszone.com/the-photoelectric-effect-photons-and-plancks-equation/)). The rate of
 electron release is proportional to the light intensity, producing a small
 electrical current (photocurrent) that flows as long as light falls on the
 detector.
+
+<p align="center">
+  <img src="Illustrations/PE-effect.png" width="480">
+</p>
 
 Each of the 8 visible channels (F1–F8) sits beneath a narrow-band
 interference filter that passes only a specific slice of the spectrum. The
