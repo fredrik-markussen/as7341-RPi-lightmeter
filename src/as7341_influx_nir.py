@@ -184,7 +184,7 @@ BANDS9 = ["nm415","nm445","nm480","nm515","nm555","nm590","nm630","nm680","nir"]
 WLS9   = [  415,    445,    480,    515,    555,    590,    630,    680,    910 ]  # Center wavelengths in nanometers
 VIS8 = BANDS9[:8]  # Visible channels only (excludes NIR for separate processing)
 BANDWIDTHS_NM = [26, 30, 36, 39, 39, 40, 50, 52]  # AS7341 FWHM per VIS8 channel (nm)
-_PFD_SCALE = 119700.0  # h × c × Na, scaled to µmol (J·nm/µmol)
+_PFD_SCALE = 119.7  # h × c × Na in J·nm/µmol  (= 0.1196 J·m/mol × 10⁹ nm/m ÷ 10⁶ µmol/mol)
 
 # ============================
 # SPECTRAL ACCURACY IMPROVEMENTS

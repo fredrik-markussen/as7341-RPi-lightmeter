@@ -169,11 +169,12 @@ Emitted as the `irradiance` field on each VIS8 point in InfluxDB and as
 Summed across all 8 VIS channels (415–680 nm, covering the PAR window):
 
 ```
-PFD (µmol/m²/s) = Σ irradiance[i] × λ[i] (nm) × Δλ[i] (nm) / 119700
+PFD (µmol/m²/s) = Σ irradiance[i] × λ[i] (nm) × Δλ[i] (nm) / 119.7
 ```
 
 where Δλ is each channel's FWHM bandwidth (26, 30, 36, 39, 39, 40, 50, 52 nm
-for 415–680 nm respectively) and 119700 = h × c × Nₐ scaled to µmol·nm/J.
+for 415–680 nm respectively) and 119.7 = h × c × Nₐ in J·nm/µmol
+(= 0.1196 J·m/mol × 10⁹ nm/m ÷ 10⁶ µmol/mol).
 Requires Phase 2 absolute responsivity.
 
 ### Phase 3 — Lux calibration
@@ -872,6 +873,6 @@ Delete old daily CSV files or reduce `INFLUX_ENDPOINTS` retention. See
 - Absolute spectral irradiance: `irradiance_W_m2_nm[i] = BasicCounts[i] /
   responsivity_BC_per_W_m2_nm[i]`, where `responsivity_BC_per_W_m2_nm` is
   written by `as7341_calibrate.py` Phase 2 from C-7000 reference irradiance.
-- Photon flux density: `pfd (µmol/m²/s) = Σ irr_i × λ_i(nm) × Δλ_i(nm) / 119700`
+- Photon flux density: `pfd (µmol/m²/s) = Σ irr_i × λ_i(nm) × Δλ_i(nm) / 119.7`
   summed across the 8 VIS channels (415–680 nm); channel bandwidths (FWHM)
   are 26, 30, 36, 39, 39, 40, 50, 52 nm respectively.
