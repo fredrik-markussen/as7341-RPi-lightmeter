@@ -44,6 +44,121 @@ A short functional spec lives in [FSD.md](FSD.md).
 
 ---
 
+## Maths
+
+### Integration time and ADC full-scale
+
+The AS7341 exposure is set via two registers:
+
+```
+t_int (ms) = (ATIME + 1) × (ASTEP + 1) × 2.78×10⁻³
+ADC_FS     = min(65535, (ATIME + 1) × (ASTEP + 1))
+```
+
+ASTEP is maximised for the target integration time (better precision), ATIME
+minimised. ADC full-scale caps at 65535 regardless of register product.
+
+### BasicCounts — exposure-independent signal unit
+
+Raw ADC readings depend on gain and integration time. BasicCounts remove that
+dependency so calibration coefficients remain valid across presets:
+
+```
+BasicCounts[i] = (raw[i] - dark[i]) / (gain × t_int_ms)
+```
+
+Dark offsets are captured per preset (Phase 1) and are only valid when the
+gain, ATIME, and ASTEP exactly match the capture conditions — mismatches are
+flagged at startup and dark correction is silently disabled.
+
+### Phase 1 — Dark calibration
+
+With the sensor covered, 100 frames are captured per channel per preset. The
+per-channel median is saved with full sensor metadata (gain, ATIME, ASTEP).
+Median rather than mean rejects any single hot-pixel spikes or transients
+during capture.
+
+### Phase 2 — Spectral responsivity against CoolLED + C-7000
+
+The CoolLED pE-4000 is operated in single-LED mode, one wavelength at a time
+across a sweep of 12 LEDs in the 405–660 nm range. At each step:
+
+1. The Seconic C-7000 measures the spectral irradiance (W/m²/nm) at each
+   AS7341 channel center wavelength. These values come from the C-7000's native
+   CSV export, which is parsed and linearly interpolated to the 8 channel
+   centers (415, 445, 480, 515, 555, 590, 630, 680 nm).
+2. The AS7341 captures BasicCounts simultaneously under the same illumination.
+3. Per-channel responsivity (BasicCounts per W/m²/nm) is computed as the ratio
+   of BC to irradiance at that step. A channel's ratio is only included for LED
+   steps where that channel receives at least 20% of the peak irradiance — this
+   rejects off-peak ratios that would amplify shot noise. The final responsivity
+   per channel is the mean across all qualifying steps.
+
+Two outputs are stored in `as7341_responsivity.json`:
+
+- **`corrections`** — per-channel multipliers normalised to 555 nm = 1.0.
+  Applied when computing relative spectral composition so that equal true
+  irradiance at each wavelength produces equal BasicCounts after correction.
+- **`responsivity_BC_per_W_m2_nm`** — absolute responsivity. Used to convert
+  BasicCounts back to physical irradiance units in W/m²/nm.
+
+### Relative spectral composition
+
+Applied every measurement cycle using the correction factors from Phase 2:
+
+```
+BC_corrected[i] = BasicCounts[i] × correction[i]
+rel_intensity[i] = BC_corrected[i] / Σ BC_corrected[VIS8]
+```
+
+The eight VIS8 channels (415–680 nm) normalise to sum = 1.0 independently.
+The 910 nm NIR channel is written as a separate data point using the same
+formula (NIR BC corrected / sum of VIS8 corrected) but is not part of the
+VIS8 normalisation.
+
+### Absolute irradiance
+
+Requires Phase 2 absolute responsivity:
+
+```
+irradiance[i] (W/m²/nm) = BasicCounts[i] / responsivity_BC_per_W_m2_nm[i]
+```
+
+Emitted as the `irradiance` field on each VIS8 point in InfluxDB and as
+`irr_*` columns in the CSV.
+
+### Photon flux density (PFD)
+
+Summed across all 8 VIS channels (415–680 nm, covering the PAR window):
+
+```
+PFD (µmol/m²/s) = Σ irradiance[i] × λ[i] (nm) × Δλ[i] (nm) / 119700
+```
+
+where Δλ is each channel's FWHM bandwidth (26, 30, 36, 39, 39, 40, 50, 52 nm
+for 415–680 nm respectively) and 119700 = h × c × Nₐ scaled to µmol·nm/J.
+Requires Phase 2 absolute responsivity.
+
+### Phase 3 — Lux calibration
+
+The AS7341 and C-7000 are placed side-by-side under the same illumination
+across a diverse set of scenes (default 12 per preset). At each scene,
+BasicCounts and the C-7000 lux reading are recorded simultaneously. A linear
+model is fitted per preset:
+
+```
+lux = b0 + Σ w[i] × BasicCounts[i]   (i over VIS8)
+```
+
+Fitting uses ridge regression (α = 0.01) with MAD outlier rejection and
+k-fold cross-validation to report goodness of fit. Calibration is per-preset
+because changing gain or integration time rescales BasicCounts — the
+coefficients are not transferable between presets. **Lux is currently
+unreliable** pending a recalibration with overlapping scenes across all three
+presets (see task #1 in the project log).
+
+---
+
 ## Installation
 
 ### 1. System packages and I²C
