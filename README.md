@@ -48,15 +48,23 @@ A short functional spec lives in [FSD.md](FSD.md).
 
 ### Integration time and ADC full-scale
 
-The AS7341 exposure is set via two registers:
+The AS7341 accumulates photocurrent in each spectral channel for a fixed
+exposure window before reading out. This window is controlled by two integer
+registers:
+
+- **ATIME** (0–255) — number of integration cycles minus one.
+- **ASTEP** (0–65534) — duration of each cycle in units of 2.78 µs.
+
+Together they set the total integration time and the ADC full-scale count:
 
 ```
 t_int (ms) = (ATIME + 1) × (ASTEP + 1) × 2.78×10⁻³
 ADC_FS     = min(65535, (ATIME + 1) × (ASTEP + 1))
 ```
 
-ASTEP is maximised for the target integration time (better precision), ATIME
-minimised. ADC full-scale caps at 65535 regardless of register product.
+ASTEP is maximised for a target integration time (more counts per cycle =
+better precision), ATIME minimised. ADC full-scale caps at 65535 (16-bit)
+regardless of the register product.
 
 ### BasicCounts — exposure-independent signal unit
 
