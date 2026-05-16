@@ -84,7 +84,7 @@ registers:
 - **ATIME** (0–255) — number of integration cycles minus one.
 - **ASTEP** (0–65534) — duration of each cycle in units of 2.78 µs.
 
-Together they set the total integration time and the ADC full-scale count:
+Together they set the total integration time and the ADC (analogue-to-digital converter) full-scale count — the maximum digital value the converter can return before saturating:
 
 ```
 t_int (ms) = (ATIME + 1) × (ASTEP + 1) × 2.78×10⁻³
