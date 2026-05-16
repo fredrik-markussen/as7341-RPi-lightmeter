@@ -60,27 +60,12 @@ interference filter that passes only a specific slice of the spectrum. The
 CLEAR channel has no filter and responds to all wavelengths simultaneously.
 The NIR channel carries a longpass filter that passes ~910 nm.
 
-```
-         AS7341 — 10-channel spectral sensor (top view, not to scale)
-
-  ┌────────────────────────────────────────────────────────────────┐
-  │                                                                │
-  │  ┌───────┐  ┌───────┐  ┌───────┐  ┌───────┐  ┌────────────┐  │
-  │  │  F1   │  │  F2   │  │  F3   │  │  F4   │  │   CLEAR    │  │
-  │  │ 415nm │  │ 445nm │  │ 480nm │  │ 515nm │  │ broadband  │  │
-  │  │violet │  │ blue  │  │ blue  │  │ cyan  │  │ (no filter)│  │
-  │  └───────┘  └───────┘  └───────┘  └───────┘  └────────────┘  │
-  │                                                                │
-  │  ┌───────┐  ┌───────┐  ┌───────┐  ┌───────┐  ┌────────────┐  │
-  │  │  F5   │  │  F6   │  │  F7   │  │  F8   │  │    NIR     │  │
-  │  │ 555nm │  │ 590nm │  │ 630nm │  │ 680nm │  │  ~910nm    │  │
-  │  │ green │  │yellow │  │orange │  │  red  │  │  infrared  │  │
-  │  └───────┘  └───────┘  └───────┘  └───────┘  └────────────┘  │
-  │                                                                │
-  └────────────────────────────────────────────────────────────────┘
-        ↑ bandpass filters (each ~26–52 nm FWHM)
-        ↑ silicon photodiodes beneath each filter
-```
+<table>
+  <tr>
+    <td align="center"><img src="Illustrations/Adafruit_board.png" width="280"><br><em>Adafruit AS7341 breakout board</em></td>
+    <td align="center"><img src="Illustrations/Sensor schematic.png" width="480"><br><em>AS7341 die — each F-channel filter appears twice across the 4×4 photodiode array for spatial uniformity</em></td>
+  </tr>
+</table>
 
 All 10 channels integrate in parallel — every channel sees the same light
 field simultaneously, so the spectral snapshot is instantaneous with no
