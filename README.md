@@ -1,8 +1,10 @@
 # Raspberry Pi AS7341 Spectral Light Meter → InfluxDB
 
-Publishes calibrated **lux** and **relative spectral composition** across
-9 bands (415–680 nm visible + ~910 nm NIR) from a Raspberry Pi to InfluxDB,
-suitable for Grafana dashboarding and field measurements.
+Publishes calibrated spectral data from a Raspberry Pi to InfluxDB across
+9 bands (415–680 nm visible + ~910 nm NIR), suitable for Grafana dashboarding
+and field measurements. Primary outputs are **photon flux density**
+(µmol/m²/s, 400–700 nm PAR range) and **relative spectral composition**;
+lux is also computed as a secondary reference.
 
 Two scripts do most of the work:
 
@@ -13,8 +15,9 @@ A short functional spec lives in [FSD.md](FSD.md).
 
 ## Features
 
-- Two-preset auto-sensitivity (HI: gain ×256 / 50 ms for dim, LO: gain ×16 /
-  10 ms for bright) with hysteresis to avoid flapping.
+- **Photon flux density** output (µmol/m²/s, 400–700 nm) from per-channel
+  absolute irradiance — the primary quantity for circadian and seasonal biology.
+- Three-preset auto-sensitivity (HI / LO / SUN) with hysteresis to avoid flapping.
 - Per-preset dark calibration and per-preset VIS8 lux calibration.
 - Guided 3-phase calibration script that walks through dark, spectral
   responsivity, and lux against a Seconic C-7000 + CoolLED pE-4000.
@@ -301,22 +304,25 @@ influx -execute 'ALTER RETENTION POLICY autogen ON lightmeter DURATION 30d REPLI
     produced an absolute responsivity calibration. Omitted from NIR (the
     C-7000 reference does not reach 910 nm).
 
-**Lux** — measurement `LIGHT_LUX`, 1 point per cycle:
+**Lux / PFD** — measurement `LIGHT_LUX`, 1 point per cycle:
 
 - Tags: `Device=<DEVICE>`, `method=lin_basic`.
-- Fields: `lux` (calibrated), `clear` (raw CLEAR channel).
+- Fields: `lux` (calibrated illuminance), `clear` (raw CLEAR channel ADC),
+  `pfd` (total photon flux density in µmol/m²/s across 415–680 nm —
+  emitted only when Phase 2 absolute responsivity calibration is present).
 
-**CSV archive** — same data, 21 columns:
+**CSV archive** — same data, 22 columns:
 
 ```
 timestamp_iso,device,lux,clear,
 rel_415,rel_445,rel_480,rel_515,rel_555,rel_590,rel_630,rel_680,rel_nir,
-irr_415,irr_445,irr_480,irr_515,irr_555,irr_590,irr_630,irr_680
+irr_415,irr_445,irr_480,irr_515,irr_555,irr_590,irr_630,irr_680,
+pfd
 ```
 
-The `irr_*` cells (W/m²/nm at channel center) are populated only when Phase 2
-has produced an absolute responsivity; otherwise they are emitted empty so
-the column count stays stable.
+The `irr_*` cells (W/m²/nm at channel center) and `pfd` (µmol/m²/s) are
+populated only when Phase 2 has produced an absolute responsivity; otherwise
+they are emitted empty so the column count stays stable.
 
 Quick sanity query:
 
@@ -711,3 +717,6 @@ Delete old daily CSV files or reduce `INFLUX_ENDPOINTS` retention. See
 - Absolute spectral irradiance: `irradiance_W_m2_nm[i] = BasicCounts[i] /
   responsivity_BC_per_W_m2_nm[i]`, where `responsivity_BC_per_W_m2_nm` is
   written by `as7341_calibrate.py` Phase 2 from C-7000 reference irradiance.
+- Photon flux density: `pfd (µmol/m²/s) = Σ irr_i × λ_i(nm) × Δλ_i(nm) / 119700`
+  summed across the 8 VIS channels (415–680 nm); channel bandwidths (FWHM)
+  are 26, 30, 36, 39, 39, 40, 50, 52 nm respectively.

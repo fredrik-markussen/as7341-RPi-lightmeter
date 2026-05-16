@@ -168,7 +168,8 @@ CSV_HEADER = ["timestamp_iso", "device", "lux", "clear",
               "rel_415", "rel_445", "rel_480", "rel_515",
               "rel_555", "rel_590", "rel_630", "rel_680", "rel_nir",
               "irr_415", "irr_445", "irr_480", "irr_515",
-              "irr_555", "irr_590", "irr_630", "irr_680"]
+              "irr_555", "irr_590", "irr_630", "irr_680",
+              "pfd"]
 # Absolute irradiance columns (W/m^2/nm at channel center) are populated only
 # when as7341_responsivity.json carries a `responsivity_BC_per_W_m2_nm` block
 # (written by as7341_calibrate.py Phase 2). Otherwise they are emitted empty.
@@ -182,6 +183,8 @@ CSV_TMP_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})-(\d{4})-" + re.escape(CSV_TAG) + 
 BANDS9 = ["nm415","nm445","nm480","nm515","nm555","nm590","nm630","nm680","nir"]  # 8 visible + 1 NIR channel names
 WLS9   = [  415,    445,    480,    515,    555,    590,    630,    680,    910 ]  # Center wavelengths in nanometers
 VIS8 = BANDS9[:8]  # Visible channels only (excludes NIR for separate processing)
+BANDWIDTHS_NM = [26, 30, 36, 39, 39, 40, 50, 52]  # AS7341 FWHM per VIS8 channel (nm)
+_PFD_SCALE = 119700.0  # h × c × Na, scaled to µmol (J·nm/µmol)
 
 # ============================
 # SPECTRAL ACCURACY IMPROVEMENTS
@@ -535,7 +538,18 @@ def init_influx_templates():
     # Build lux measurement template: "LIGHT_LUX,Device=RPi-1,method=lin_basic"
     LUX_TEMPLATE = f"LIGHT_LUX,Device={DEVICE},method=lin_basic"
 
-def build_influx_lines(ts_ns:int, rel_vis8, rel_nir, lux_value, clear_value, irr_vis8=None):
+def compute_pfd(irr_vis8) -> float | None:
+    """Total photon flux density (µmol/m²/s) across 400–700nm VIS8 channels.
+
+    Returns None if absolute irradiance has not been calibrated.
+    """
+    if irr_vis8 is None:
+        return None
+    return sum(irr * wl * bw / _PFD_SCALE
+               for irr, wl, bw in zip(irr_vis8, WLS9[:8], BANDWIDTHS_NM))
+
+
+def build_influx_lines(ts_ns:int, rel_vis8, rel_nir, lux_value, clear_value, irr_vis8=None, pfd=None):
     """
     Build InfluxDB line protocol payload from measurement data.
 
@@ -571,8 +585,11 @@ def build_influx_lines(ts_ns:int, rel_vis8, rel_nir, lux_value, clear_value, irr
     lines.append(f"{INFLUX_TEMPLATES[8]} rel_intensity={rel_nir:.6f} {ts_ns}")
 
     # Lux measurement with both lux (calibrated) and clear (raw) fields
-    # Format: "LIGHT_LUX,Device=RPi-1,method=lin_basic lux=123.456,clear=12345 1234567890000000000"
-    lines.append(f"{LUX_TEMPLATE} lux={lux_value:.3f},clear={int(clear_value)} {ts_ns}")
+    # Format: "LIGHT_LUX,Device=RPi-1,method=lin_basic lux=123.456,clear=12345[,pfd=1.2345] 1234..."
+    lux_fields = f"lux={lux_value:.3f},clear={int(clear_value)}"
+    if pfd is not None:
+        lux_fields += f",pfd={pfd:.4f}"
+    lines.append(f"{LUX_TEMPLATE} {lux_fields} {ts_ns}")
     return lines
 
 # ============================
@@ -673,7 +690,7 @@ def csv_startup_recovery():
     n = merge_tmp_files_to_daily(leftovers)
     print(f"[STARTUP] Merged {n} leftover tmp CSV file(s) into daily file(s).")
 
-def write_csv_fallback(ts_ns:int, lux:float, clear:float, rel_vis8, rel_nir:float, state:dict, irr_vis8=None):
+def write_csv_fallback(ts_ns:int, lux:float, clear:float, rel_vis8, rel_nir:float, state:dict, irr_vis8=None, pfd=None):
     """
     Append one row to the active 10-min tmp CSV. Rotates the active file
     if it has been open for >= CSV_ROTATE_INTERVAL_S; runs aggregation of
@@ -711,6 +728,7 @@ def write_csv_fallback(ts_ns:int, lux:float, clear:float, rel_vis8, rel_nir:floa
         row.extend([""] * 8)
     else:
         row.extend(f"{x:.6e}" for x in irr_vis8)
+    row.append(f"{pfd:.4f}" if pfd is not None else "")
 
     with open(state["path"], "a", newline="") as f:
         w = csv.writer(f)
@@ -1020,8 +1038,9 @@ def main():
                 irr_vis8 = None
 
             # -------- Build payload --------
+            pfd = compute_pfd(irr_vis8)
             ts = time.time_ns()
-            lines = build_influx_lines(ts, rel_vis8, rel_nir, lux, clear, irr_vis8)
+            lines = build_influx_lines(ts, rel_vis8, rel_nir, lux, clear, irr_vis8, pfd)
             payload = "\n".join(lines)
 
             sample_idx += 1
@@ -1086,7 +1105,7 @@ def main():
             # endpoints failed (archive-only, no auto-replay either way).
             if CSV_ALWAYS or not any_success:
                 try:
-                    write_csv_fallback(ts, lux, clear, rel_vis8, rel_nir, csv_state, irr_vis8)
+                    write_csv_fallback(ts, lux, clear, rel_vis8, rel_nir, csv_state, irr_vis8, pfd)
                     metrics["csv_rows_written"] += 1
                 except Exception as e:
                     print(f"[ERR] CSV write failed: {e}")
