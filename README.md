@@ -46,6 +46,46 @@ A short functional spec lives in [FSD.md](FSD.md).
 
 ## Maths
 
+### Sensor layout and principle of operation
+
+The AS7341 contains 10 independent photodetector channels on a single silicon
+die. Each channel is a photodiode — a semiconductor junction that releases
+electrons when struck by photons (the photoelectric effect). The rate of
+electron release is proportional to the light intensity, producing a small
+electrical current (photocurrent) that flows as long as light falls on the
+detector.
+
+Each of the 8 visible channels (F1–F8) sits beneath a narrow-band
+interference filter that passes only a specific slice of the spectrum. The
+CLEAR channel has no filter and responds to all wavelengths simultaneously.
+The NIR channel carries a longpass filter that passes ~910 nm.
+
+```
+         AS7341 — 10-channel spectral sensor (top view, not to scale)
+
+  ┌────────────────────────────────────────────────────────────────┐
+  │                                                                │
+  │  ┌───────┐  ┌───────┐  ┌───────┐  ┌───────┐  ┌────────────┐  │
+  │  │  F1   │  │  F2   │  │  F3   │  │  F4   │  │   CLEAR    │  │
+  │  │ 415nm │  │ 445nm │  │ 480nm │  │ 515nm │  │ broadband  │  │
+  │  │violet │  │ blue  │  │ blue  │  │ cyan  │  │ (no filter)│  │
+  │  └───────┘  └───────┘  └───────┘  └───────┘  └────────────┘  │
+  │                                                                │
+  │  ┌───────┐  ┌───────┐  ┌───────┐  ┌───────┐  ┌────────────┐  │
+  │  │  F5   │  │  F6   │  │  F7   │  │  F8   │  │    NIR     │  │
+  │  │ 555nm │  │ 590nm │  │ 630nm │  │ 680nm │  │  ~910nm    │  │
+  │  │ green │  │yellow │  │orange │  │  red  │  │  infrared  │  │
+  │  └───────┘  └───────┘  └───────┘  └───────┘  └────────────┘  │
+  │                                                                │
+  └────────────────────────────────────────────────────────────────┘
+        ↑ bandpass filters (each ~26–52 nm FWHM)
+        ↑ silicon photodiodes beneath each filter
+```
+
+All 10 channels integrate in parallel — every channel sees the same light
+field simultaneously, so the spectral snapshot is instantaneous with no
+scanning or moving parts.
+
 ### Integration time and ADC full-scale
 
 The AS7341 accumulates photocurrent in each spectral channel for a fixed
