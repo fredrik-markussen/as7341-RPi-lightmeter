@@ -4,7 +4,10 @@ Publishes calibrated spectral data from a Raspberry Pi to InfluxDB across
 9 bands (415–680 nm visible + ~910 nm NIR), suitable for Grafana dashboarding
 and field measurements. Primary outputs are **photon flux density**
 (µmol/m²/s, 400–700 nm PAR range) and **relative spectral composition**;
-lux is also computed as a secondary reference.
+lux is also computed as a secondary reference. **Lux readings are currently
+unreliable** — the per-preset calibration models disagree at handoff points,
+causing step jumps when autorange switches presets. Do not use lux for
+quantitative work until the presets are recalibrated with overlapping scenes.
 
 Two scripts do most of the work:
 
