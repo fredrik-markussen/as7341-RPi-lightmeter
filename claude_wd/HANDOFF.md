@@ -383,3 +383,169 @@ was pulled. Recreated manually via nano with:
 | Remote InfluxDB | Fan-out to 10.239.99.73 and 10.239.99.97 |
 | Auto-sensitivity | 3-tier HI→LO→SUN active |
 | Grafana | Confirmed receiving data (spectral irradiance visible) |
+
+---
+
+## Session 8 — PFD output, network fixes, responsivity diagnosis (2026-05-24)
+
+### WiFi watchdog fixed
+
+Old watchdog (`/usr/local/bin/wifi_watchdog.sh`) pinged 8.8.8.8 as internet fallback and rebooted the Pi on failure. Combined with `fake-hwclock` restoring a stale timestamp on boot, this caused the Pi to reboot repeatedly when offline — all log timestamps showed the same clock value. User replaced watchdog with a version that does soft reconnect only (no reboot). Disabled old watchdog.
+
+Persistent journald logging was also set up so service logs survive reboots:
+```
+/etc/systemd/journald.conf → Storage=persistent
+sudo systemctl restart systemd-journald
+```
+Logs now accumulate in `/var/log/journal/`. View with `journalctl -u as7341 -f`.
+
+### PFD added as primary output
+
+`src/as7341_influx_nir.py` now computes and writes photon flux density (µmol/m²/s, 400–700 nm) — the primary measurement for circadian/seasonal biology work. Lux is retained as secondary reference only.
+
+Key additions:
+- Constants: `BANDWIDTHS_NM = [26, 30, 36, 39, 39, 40, 50, 52]` (AS7341 FWHM per VIS8 channel) and `_PFD_SCALE = 119.7` (h × c × Nₐ in J·nm/µmol)
+- `compute_pfd(irr_vis8)` — sums `irr × λ × Δλ / 119.7` over VIS8 channels
+- PFD written to `LIGHT_LUX` measurement in InfluxDB as `pfd=` field
+- CSV expanded to 22 columns (added `pfd`)
+- Bug fixed during session: scale was initially `119700.0` (1000× too large), giving ~1.7 µmol/m²/s in direct sun. Correct value is `119.7`.
+
+### NIR channel handling clarified
+
+NIR (910 nm) is written to InfluxDB as its own data point but is **excluded from the VIS8 normalisation** used for `rel_intensity`. Previously it was being included in the VIS8 sum, skewing relative values.
+
+### README — Maths section added
+
+New section between "Software prerequisites" and "Installation" explains the full signal chain:
+- Sensor layout (Adafruit board photo + AS7341 die schematic, side by side)
+- Photoelectric effect / ADC basics (ATIME, ASTEP, BasicCounts formula)
+- Phase 1 dark correction
+- Phase 2 responsivity procedure
+- `rel_intensity` normalisation
+- Absolute irradiance
+- PFD formula (correctly shows `/119.7`)
+- Phase 3 lux model
+- Illustration: `Illustrations/PE-effect.png` with link to thescienceandmathszone.com
+
+Lux reliability warning also added: lux readings are currently unreliable — per-preset calibration models disagree at handoff points. PFD is the recommended output.
+
+### Network: static IP → DHCP
+
+Attempted to set static IP `10.115.217.56` on `lightmeter-hotspot` profile so Windows hosts file entry `10.115.217.56 rpi-1.local` would work without mDNS. This broke internet routing on the Pi (wrong gateway assumed `.1`; phone hotspot's actual gateway was `.50`).
+
+Reverted to DHCP — the phone's DHCP server assigns the same IP consistently via MAC binding, so internet/routing works automatically with any phone. Windows 10/11 resolves `rpi-1.local` via built-in mDNS without Bonjour. No hosts file entry needed.
+
+**Do not set a static IP on `lightmeter-hotspot`.** The gateway address varies between phones.
+
+### Grafana white screen fixed
+
+Grafana JWT token validation failed (`token issued in the future`) because the Pi clock was stuck at 2026-04-21. Root cause: `fake-hwclock` restoring a stale timestamp and chrony only having `ntp-public.uit.no` (UiT internal, unreachable on hotspot). Fixed by:
+1. Adding `pool.ntp.org iburst` to `/etc/chrony/chrony.conf`
+2. Switching to DHCP (restored internet routing → NTP reachable)
+3. Clock now syncs on boot; `timedatectl` shows `System clock synchronized: yes`
+
+### Responsivity recalibration — diagnosis
+
+Field measurements against known solar irradiance show the current `as7341_responsivity.json` has errors:
+- **630 nm and 680 nm underreading** — root cause is inadequate pE-4000 LED coverage. The 680 nm channel (52 nm FWHM, 654–706 nm) has no LED in the calibration sweep past 660 nm, so its responsivity coefficient is extrapolated rather than measured.
+- **590 nm overreading** — likely a C-7000 CSV interpolation artifact that inflated the reference irradiance at that step.
+
+### What needs doing next
+
+1. **Redo Phase 2 responsivity calibration** — repeat indoor sweep carefully with C-7000 + pE-4000. A 680–700 nm LED source should be added if available to anchor the red end properly. Run:
+   ```bash
+   python3 src/as7341_calibrate.py --phase responsivity --c7000-dir C-7000_out/
+   ```
+2. **Outdoor validation** — after new responsivity file is generated, take Pi + C-7000 outside in stable direct sunlight, compare per-channel irradiance, and derive empirical correction multipliers for any remaining offsets. No tooling for this step yet — needs a new script or phase.
+3. **SUN lux recalibration** — CV R²=0.740 with 6 scenes. Re-run with more scenes if lux accuracy in sunlight matters (currently lower priority than spectral accuracy).
+
+---
+
+## Session 9 — Band-integrated C-7000 irradiance for Phase 2 (2026-06-04)
+
+### Real root cause of the red error
+
+Session 8 blamed the red underreporting on "inadequate pE-4000 LED coverage."
+That is only half of it. The dominant cause was in the **reference-irradiance
+extraction**: `_parse_c7000_native()` took the reference for each AS7341 channel
+as a single **point sample** of the C-7000 SPD at the channel center
+(`spd.get(w, 0.0) for w in WLS8`). But each channel integrates over a wide
+passband (FWHM 26–52 nm). When a narrow LED sits off-center — e.g. the 660 nm LED
+driving the 680 nm-center / 52 nm-FWHM channel — the channel's BasicCounts are
+driven by the 660 nm peak (~0.09 W/m²/nm) while the reference was read at 680 nm
+where the SPD has fallen off (~0.0099). That inflates `responsivity = BC/irr`,
+which makes the measurement script's `irr = BC/responsivity` under-report.
+
+### Fix — `src/as7341_calibrate.py`
+
+Replaced the point sample with a **Gaussian band average** over each channel's
+FWHM (the C-7000 already exports the full 1 nm SPD, 380–780 nm).
+
+| Change | Detail |
+|---|---|
+| `import math`; `BANDWIDTHS_NM = [26,30,36,39,39,40,50,52]` | FWHM per VIS8 channel (mirrors `as7341_influx_nir.py`). |
+| New `_band_average(spd, center_nm, fwhm_nm)` | Channel-response-weighted mean of the SPD; normalised over available wavelengths so the truncated tail past 780 nm doesn't bias low. Sanity-checked: flat SPD → exact mean; off-center 660 peak at the 680 channel → 0.237 vs point-sample 0.044 (5× more of the real stimulus captured). |
+| `_parse_c7000_native` | Returns `[_band_average(spd,c,fw) …]` instead of `[spd.get(w,0.0) …]`. |
+| `meta.irradiance_extraction = "band_average_gaussian_fwhm"` | Provenance flag in the output cal file. |
+
+Measurement script and output schema unchanged — band **average** (not sum)
+preserves the W/m²/nm units `irr = BC/responsivity` / `compute_pfd` expect.
+
+### Offline preview (no hardware) — `claude_wd/preview_band_integration.py`
+
+The committed `as7341_responsivity.json` stores the live AS7341 `bc8` per step in
+`raw_levels`, and its stored `irr8` IS the old point sample. The preview matches
+each stored level to its C-7000 file by that point-sample fingerprint (robust to
+file-set drift — the JSON has 39 levels, `C-7000_out/` now has 42 single-LED
+files), recomputes irradiance with band averaging, and re-derives corrections.
+Faithfulness verified: feeding the old point samples back through the preview's
+recompute reproduces the committed corrections to 5 dp.
+
+Preview result (corrections, normalised 555 nm = 1.0; all 39 levels matched):
+
+| Ch | old | new | datasheet |
+|---|---|---|---|
+| nm415 | 2.67 | 5.70 | 2.00 |
+| nm445 | 1.70 | 2.33 | 1.67 |
+| nm480 | 1.41 | 1.57 | 1.33 |
+| nm515 | 0.89 | 1.17 | 1.11 |
+| nm555 | 1.00 | 1.00 | 1.00 |
+| nm590 | 1.19 | 0.90 | 1.11 |
+| nm630 | **0.40 → 0.72** | | 1.43 |
+| nm680 | **0.18 → 0.31** | | 2.00 |
+
+Interpretation:
+- **Red improves substantially and for the right physical reason** (nm630 nearly
+  doubles, nm680 ~+70%). This is the stated goal.
+- "Moving toward datasheet" is **not** the success criterion — the datasheet is
+  nominal and empirical silicon legitimately deviates (per Session 6). nm415 rises
+  to 5.70 because the 405 nm LED peak sits just inside the narrow 415 band, so the
+  channel genuinely receives more light than the 415 nm point value implied. Band
+  averaging is the more physically correct reference regardless of direction.
+- **nm680 is still far below where outdoor data suggests it should be (0.31).**
+  Band integration cannot fully fix it because no pE-4000 LED peaks in 670–700 nm;
+  the 680 channel's reference is still dominated by the 660 LED's falling tail.
+  Session 8's "add a 680–700 nm source" recommendation still stands — both root
+  causes are real; this fix removes the larger, free one.
+- **Caveat:** edge-driven channels (415 ← 405, 590 ← 595) are the most sensitive
+  to the Gaussian channel-shape assumption. Still strictly better than point
+  sampling, which assumes the channel sees a single wavelength.
+
+### What needs doing next
+
+1. **Hardware rerun** (reuses existing C-7000 files) to regenerate
+   `as7341_responsivity.json` with live captures + the new extraction:
+   ```bash
+   python3 src/as7341_calibrate.py --phase responsivity --c7000-dir C-7000_out/
+   ```
+   The committed JSON has 39 levels but `C-7000_out/` now holds 42 single-LED
+   files — the rerun will use all 42.
+2. **Outdoor validation** of the red channels against the C-7000 in stable
+   sunlight (unchanged from Session 8 item 2).
+3. **Optional 680–700 nm source** to properly anchor nm680, then re-sweep.
+
+### Files touched this session
+- `src/as7341_calibrate.py` — `import math`, `BANDWIDTHS_NM`, `_band_average()`,
+  `_parse_c7000_native` band integration, `meta.irradiance_extraction` flag.
+- `claude_wd/preview_band_integration.py` — new (untracked) offline preview.
+- `claude_wd/HANDOFF.md` — this section.

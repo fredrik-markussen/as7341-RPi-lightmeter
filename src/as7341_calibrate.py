@@ -16,7 +16,7 @@ Output files (written to --out-dir, default: project root):
   as7341_lux_cal_lo.json     Phase 3 LO
 """
 
-import argparse, csv, datetime, json, random, re, time
+import argparse, csv, datetime, json, math, random, re, time
 from pathlib import Path
 from statistics import median
 
@@ -30,6 +30,7 @@ from adafruit_as7341 import AS7341, Gain
 BANDS8 = ["nm415","nm445","nm480","nm515","nm555","nm590","nm630","nm680"]
 BANDS9 = BANDS8 + ["nir"]
 WLS8   = [415, 445, 480, 515, 555, 590, 630, 680]
+BANDWIDTHS_NM = [26, 30, 36, 39, 39, 40, 50, 52]  # AS7341 FWHM per VIS8 channel (nm)
 
 GAIN_MULT = {
     Gain.GAIN_0_5X:0.5,  Gain.GAIN_1X:1.0,   Gain.GAIN_2X:2.0,   Gain.GAIN_4X:4.0,
@@ -284,6 +285,27 @@ def _interpolate(wls, irr, target_nm):
     raise ValueError(f"Wavelength {target_nm}nm is outside CSV range "
                      f"({wls[0]}–{wls[-1]}nm)")
 
+def _band_average(spd, center_nm, fwhm_nm):
+    """Channel-response-weighted average of the SPD over a channel passband.
+
+    `spd` is {int nm: W/m^2/nm}. Models the AS7341 channel as a Gaussian with
+    the given FWHM and returns the weighted mean spectral irradiance density
+    (same units as the input), normalised over available wavelengths so the
+    truncated tail beyond the C-7000 range does not bias the result low.
+
+    This characterises each channel against the irradiance it actually
+    integrates across its passband, rather than a single point sample at the
+    channel center — important for off-center narrow-LED steps (e.g. a 660 nm
+    LED driving the 680 nm-center channel).
+    """
+    sigma = fwhm_nm / 2.3548200450309493  # FWHM -> sigma
+    num = den = 0.0
+    for nm, e in spd.items():
+        w = math.exp(-0.5 * ((nm - center_nm) / sigma) ** 2)
+        num += w * e
+        den += w
+    return num / den if den > 0 else 0.0
+
 DEFAULT_RESP_WAVELENGTHS = [405, 435, 460, 470, 490, 500, 525, 550, 580, 595, 635, 660]
 
 def _parse_c7000_native(path):
@@ -317,7 +339,8 @@ def _parse_c7000_native(path):
             spd[int(m.group(1))] = float(m.group(2))
     if led_nm is None or not spd:
         return None
-    return (led_nm, strength, [spd.get(w, 0.0) for w in WLS8])
+    irr8 = [_band_average(spd, c, fw) for c, fw in zip(WLS8, BANDWIDTHS_NM)]
+    return (led_nm, strength, irr8)
 
 def _load_c7000_dir(dirpath):
     """Load all C-7000 native CSVs from dirpath.
@@ -512,6 +535,7 @@ def run_phase2(s, args):
             "n_samples_per_channel": {b: n for b, n in zip(BANDS8, n_used)},
             "min_irr_frac": frac,
             "resp_avg_frames": args.resp_avg,
+            "irradiance_extraction": "band_average_gaussian_fwhm",
             "instrument": "Seconic C-7000",
             "source": "CoolLED pE-4000, single-LED mode (wavelength sweep)",
             "units": "responsivity_BC_per_W_m2_nm in BasicCounts per (W/m^2/nm)",
