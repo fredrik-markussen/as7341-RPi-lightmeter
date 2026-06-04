@@ -549,3 +549,84 @@ Interpretation:
   `_parse_c7000_native` band integration, `meta.irradiance_extraction` flag.
 - `claude_wd/preview_band_integration.py` — new (untracked) offline preview.
 - `claude_wd/HANDOFF.md` — this section.
+
+---
+
+## Session 10 — calRE2 dataset + 770 nm leakage fix (2026-06-04)
+
+### New C-7000 dataset (calRE2), metadata backfilled
+
+User re-shot the full sweep: 45 files `C-7000_out/AS7341-calRE2_001..045`, 15
+pE-4000 LEDs (385–770 nm) × 25/50/100 %, replacing the old `004–063` set (which
+was removed). The new exports had no CoolLED metadata; it was backfilled from the
+measured Peak Wavelength + ascending illuminance per file (group = file order in
+pE-4000 channel order; 550 & 580 both peak ~555 nm). `CoolLED_nm,<nm>` +
+`CoolLED_strength,<pct>` inserted after each Title line. Committed as the data swap
+(45 added, 56 removed).
+
+### First hardware rerun exposed a real bug: 770 nm out-of-band leakage
+
+The Phase 2 rerun produced unphysical corrections (blue collapsed:
+nm415=0.16, nm445=0.12, nm480=0.19; should be ~datasheet ≥1.3). Root cause:
+
+- At 770 nm the AS7341 interference filters break down — **every** channel
+  responds with near-equal out-of-band leakage (step 45 BC ≈ flat 0.06–0.11
+  across all 8 channels).
+- The C-7000's in-band irradiance at the blue centers under a 770 nm LED is
+  near-zero noise floor (~4e-4). `responsivity = BC/irr` of (real leakage)/(≈0)
+  gave ratios of 150–270 that swamped the legitimate ~1.5–7 contributions.
+- These slipped past `--resp-min-irr-frac` because that filter is **relative
+  within a step**, and the 770 nm spectrum is flat across channels, so every
+  channel passes the "≥20 % of this step's max" test.
+- The OLD point-sampled cal never hit this: the 770 nm point samples were exactly
+  0 at every center, so the step was auto-skipped (`max_ir <= 0`). Band
+  integration turned those zeros into tiny non-zeros → no longer skipped.
+
+### Fix — `src/as7341_calibrate.py`
+
+| Change | Detail |
+|---|---|
+| `_compute_responsivity(level_data, frac, chan_frac)` | Factored out; adds a **per-channel absolute floor** `chan_frac`: a level contributes to a channel only if that channel's irradiance ≥ `chan_frac × (channel's strongest irradiance across the sweep)`. Drops leakage-only levels (770 nm excluded from every channel) while keeping legit stimuli (660/740 still feed nm680). |
+| `--resp-min-chan-frac` (default 0.1) | New CLI knob for the floor. |
+| `_finalize_responsivity(...)` | Shared write+print, records `min_chan_frac`. |
+| `run_recompute()` / `--recompute` [`--recompute-from`] | Re-derive corrections from an existing cal file's `raw_levels` **with no hardware** — re-tune filters without repeating the 45-step sweep. Runs before sensor init in `main()`. |
+
+### Corrected result (floor=0.1, verified offline from the run's raw_levels)
+
+| Ch | old(point) | broken(band) | fixed(band+floor) | datasheet |
+|---|---|---|---|---|
+| nm415 | 2.67 | 0.16 | 6.21 | 2.00 |
+| nm445 | 1.70 | 0.12 | 2.15 | 1.67 |
+| nm480 | 1.41 | 0.19 | 1.47 | 1.33 |
+| nm515 | 0.89 | 1.17 | 1.17 | 1.11 |
+| nm555 | 1.00 | 1.00 | 1.00 | 1.00 |
+| nm590 | 1.19 | 0.81 | 0.81 | 1.11 |
+| nm630 | **0.40** | 0.72 | **0.71** | 1.43 |
+| nm680 | **0.18** | 0.21 | **0.42** | 2.00 |
+
+- **Red improved (the goal):** nm630 0.40→0.71, nm680 0.18→0.42.
+- **Blue edge nm415 = 6.21 is high** vs datasheet 2.0 / old 2.67. Band integration
+  is exact only when the Gaussian-FWHM channel model matches the true response;
+  nm415 is the narrowest channel and its only LEDs (385/405/435) all peak at/below
+  its band, so the model error shows up there. nm590 (0.81) and nm680 (0.42, still
+  below datasheet 2.0) are limited by one-sided LED coverage — no LED peaks in
+  670–700 nm. These edge channels remain the weak point; **outdoor validation
+  against the C-7000 is the arbiter** before trusting blue.
+
+### What needs doing next
+1. **On the Pi, regenerate without re-sweeping** (reads the raw_levels just saved):
+   ```bash
+   git pull
+   python3 src/as7341_calibrate.py --recompute
+   sudo systemctl restart as7341
+   ```
+2. **Outdoor validation** of per-channel irradiance vs the C-7000 in stable
+   sunlight — especially nm415 (over-correct?) and nm630/nm680 (under-correct?).
+3. The 770 nm (and marginally 740 nm) LEDs add little to VIS8; the floor makes
+   them harmless, so no need to drop them from future sweeps.
+
+### Files touched this session
+- `C-7000_out/` — old set removed, 45 calRE2 files added + CoolLED metadata.
+- `src/as7341_calibrate.py` — `_compute_responsivity`, `_finalize_responsivity`,
+  `run_recompute`, `--resp-min-chan-frac`, `--recompute[-from]`.
+- `claude_wd/HANDOFF.md` — this section.

@@ -409,6 +409,117 @@ def _parse_wavelengths(spec):
         raise ValueError("--resp-wavelengths must list at least one wavelength in nm")
     return out
 
+DATASHEET_CORR = [2.0, 1.67, 1.33, 1.11, 1.0, 1.11, 1.43, 2.0]
+
+def _compute_responsivity(level_data, frac, chan_frac):
+    """Average BC/E per channel over qualifying LED levels.
+
+    Two filters guard the average:
+      frac (per-step, relative):  a channel contributes from a level only if its
+        in-band irradiance is >= frac of the strongest channel's irradiance at
+        that level. Drops far-off-peak channels whose ratio is noise.
+      chan_frac (per-channel, absolute):  a channel contributes from a level only
+        if its in-band irradiance is >= chan_frac of that channel's strongest
+        irradiance across the whole sweep. Drops levels where the channel responds
+        only to out-of-band leakage / C-7000 noise floor. Without this, an LED
+        beyond the VIS8 range (e.g. 770 nm) whose AS7341 response is flat
+        out-of-band leakage and whose C-7000 spectrum is a near-zero flat noise
+        floor slips past the per-step relative test and injects huge bc/irr ratios.
+
+    Returns (raw_resp, n_used).
+    """
+    chan_max = [max((lvl["irr8"][i] for lvl in level_data), default=0.0)
+                for i in range(8)]
+    raw_resp = [None] * 8
+    n_used   = [0] * 8
+    for i in range(8):
+        vals = []
+        for lvl in level_data:
+            bc = lvl["bc8"][i]
+            ir = lvl["irr8"][i]
+            max_ir = max(lvl["irr8"])
+            if max_ir <= 0 or ir <= 0 or bc <= 0:
+                continue
+            if (ir / max_ir) < frac:
+                continue
+            if chan_max[i] > 0 and ir < chan_frac * chan_max[i]:
+                continue
+            vals.append(bc / ir)
+        if not vals:
+            raise ValueError(
+                f"No valid responsivity data for channel {BANDS8[i]} "
+                f"(λ={WLS8[i]} nm). Add an LED near this wavelength, or lower "
+                f"--resp-min-irr-frac ({frac}) / --resp-min-chan-frac ({chan_frac})."
+            )
+        raw_resp[i] = sum(vals) / len(vals)
+        n_used[i]   = len(vals)
+    return raw_resp, n_used
+
+def _finalize_responsivity(level_data, frac, chan_frac, meta_base, out_path):
+    """Compute corrections from level_data, write the cal JSON, print the summary."""
+    raw_resp, n_used = _compute_responsivity(level_data, frac, chan_frac)
+    ref = raw_resp[WLS8.index(555)]
+    corrections = [ref / r for r in raw_resp]
+
+    meta = dict(meta_base)
+    meta.update({
+        "n_samples_per_channel": {b: n for b, n in zip(BANDS8, n_used)},
+        "min_irr_frac": frac,
+        "min_chan_frac": chan_frac,
+        "irradiance_extraction": "band_average_gaussian_fwhm",
+        "units": "responsivity_BC_per_W_m2_nm in BasicCounts per (W/m^2/nm)",
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    })
+    result = {
+        "corrections": {b: round(c, 6) for b, c in zip(BANDS8, corrections)},
+        "responsivity_BC_per_W_m2_nm": {b: r for b, r in zip(BANDS8, raw_resp)},
+        "meta": meta,
+        "raw_levels": level_data,
+    }
+    with open(out_path, "w") as f:
+        json.dump(result, f, indent=2)
+
+    print("\nEmpirical responsivity corrections (normalised to 555nm = 1.0):")
+    print(f"  {'Channel':>8}  {'Measured':>10}  {'Datasheet':>10}  {'Diff':>8}  {'n':>4}")
+    for b, meas, ds, n in zip(BANDS8, corrections, DATASHEET_CORR, n_used):
+        print(f"  {b:>8}  {meas:>10.4f}  {ds:>10.4f}  {meas-ds:>+8.4f}  {n:>4}")
+    print("\nAbsolute responsivity (BasicCounts per W/m^2/nm):")
+    for b, r in zip(BANDS8, raw_resp):
+        print(f"  {b:>8}  {r:>12.4e}")
+    short = [b for b, n in zip(BANDS8, n_used) if n < 2]
+    if short:
+        print(f"\n[NOTE] Channels with < 2 contributing LEDs: {', '.join(short)}. "
+              "Consider adding LEDs nearer those wavelengths to your sweep.")
+    print(f"\nSaved {Path(out_path).name}")
+    return corrections, n_used
+
+def run_recompute(args):
+    """Re-derive corrections from an existing cal file's raw_levels — no hardware.
+
+    Lets you re-tune the contribution filters (--resp-min-irr-frac,
+    --resp-min-chan-frac) without repeating the LED sweep.
+    """
+    in_path = Path(args.recompute_from) if args.recompute_from \
+        else Path(args.out_dir) / "as7341_responsivity.json"
+    header("PHASE 2: Recompute responsivity from existing captures")
+    print(f"Reading raw_levels from {in_path}")
+    data = json.loads(in_path.read_text())
+    level_data = data.get("raw_levels")
+    if not level_data:
+        raise SystemExit(f"{in_path.name} has no 'raw_levels' to recompute from.")
+    print(f"{len(level_data)} stored levels; "
+          f"frac={args.resp_min_irr_frac}, chan_frac={args.resp_min_chan_frac}")
+    meta_base = dict(data.get("meta", {}))
+    # drop the fields _finalize recomputes so they are not stale-duplicated
+    for k in ("n_samples_per_channel", "min_irr_frac", "min_chan_frac",
+              "irradiance_extraction", "units", "timestamp"):
+        meta_base.pop(k, None)
+    meta_base["recomputed_from"] = in_path.name
+    out_path = Path(args.out_dir) / "as7341_responsivity.json"
+    _finalize_responsivity(level_data, args.resp_min_irr_frac,
+                           args.resp_min_chan_frac, meta_base, out_path)
+    print("Restart as7341_influx_nir.py to apply the new corrections.")
+
 def run_phase2(s, args):
     header("PHASE 2: Spectral Responsivity")
     print("Equipment: AS7341 with dome diffuser + Seconic C-7000 side-by-side.")
@@ -493,74 +604,17 @@ def run_phase2(s, args):
             irr8 = _get_irradiance_for_level(k+1, n, led_nm)
             level_data.append({"led_nm": led_nm, "bc8": bc8, "irr8": irr8})
 
-    # Per-channel responsivity: average BC/E only over levels where the channel
-    # actually sees significant LED power. Channels far from the LED have near-zero
-    # SPD at their center and the ratio would amplify noise, so filter by relative
-    # SPD strength at this level.
-    frac = float(args.resp_min_irr_frac)
-    raw_resp = [None] * 8
-    n_used   = [0] * 8
-
-    for i in range(8):
-        vals = []
-        for lvl in level_data:
-            bc = lvl["bc8"][i]
-            ir = lvl["irr8"][i]
-            max_ir = max(lvl["irr8"])
-            if max_ir <= 0 or ir <= 0 or bc <= 0:
-                continue
-            if (ir / max_ir) < frac:
-                continue
-            vals.append(bc / ir)
-        if not vals:
-            raise ValueError(
-                f"No valid responsivity data for channel {BANDS8[i]} "
-                f"(λ={WLS8[i]} nm). Add an LED near this wavelength or lower "
-                f"--resp-min-irr-frac (currently {frac})."
-            )
-        raw_resp[i] = sum(vals) / len(vals)
-        n_used[i]   = len(vals)
-
-    # Normalise to F5/555 nm = 1.0
-    ref = raw_resp[WLS8.index(555)]
-    corrections = [ref / r for r in raw_resp]
-
-    out_path = Path(args.out_dir) / "as7341_responsivity.json"
-    result = {
-        "corrections": {b: round(c, 6) for b, c in zip(BANDS8, corrections)},
-        "responsivity_BC_per_W_m2_nm": {b: r for b, r in zip(BANDS8, raw_resp)},
-        "meta": {
-            "gain": str(s.gain), "it_ms": it_ms,
-            "wavelengths_nm": wavelengths,
-            "n_samples_per_channel": {b: n for b, n in zip(BANDS8, n_used)},
-            "min_irr_frac": frac,
-            "resp_avg_frames": args.resp_avg,
-            "irradiance_extraction": "band_average_gaussian_fwhm",
-            "instrument": "Seconic C-7000",
-            "source": "CoolLED pE-4000, single-LED mode (wavelength sweep)",
-            "units": "responsivity_BC_per_W_m2_nm in BasicCounts per (W/m^2/nm)",
-            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        },
-        "raw_levels": level_data,
+    # Per-channel responsivity: see _compute_responsivity for the two filters.
+    meta_base = {
+        "gain": str(s.gain), "it_ms": it_ms,
+        "wavelengths_nm": wavelengths,
+        "resp_avg_frames": args.resp_avg,
+        "instrument": "Seconic C-7000",
+        "source": "CoolLED pE-4000, single-LED mode (wavelength sweep)",
     }
-    with open(out_path, "w") as f:
-        json.dump(result, f, indent=2)
-
-    print("\nEmpirical responsivity corrections (normalised to 555nm = 1.0):")
-    datasheet = [2.0, 1.67, 1.33, 1.11, 1.0, 1.11, 1.43, 2.0]
-    print(f"  {'Channel':>8}  {'Measured':>10}  {'Datasheet':>10}  {'Diff':>8}  {'n':>4}")
-    for b, meas, ds, n in zip(BANDS8, corrections, datasheet, n_used):
-        diff = meas - ds
-        print(f"  {b:>8}  {meas:>10.4f}  {ds:>10.4f}  {diff:>+8.4f}  {n:>4}")
-
-    print("\nAbsolute responsivity (BasicCounts per W/m^2/nm):")
-    for b, r in zip(BANDS8, raw_resp):
-        print(f"  {b:>8}  {r:>12.4e}")
-    short = [b for b, n in zip(BANDS8, n_used) if n < 2]
-    if short:
-        print(f"\n[NOTE] Channels with < 2 contributing LEDs: {', '.join(short)}. "
-              "Consider adding LEDs nearer those wavelengths to your sweep.")
-    print(f"\nSaved {out_path.name}")
+    out_path = Path(args.out_dir) / "as7341_responsivity.json"
+    _finalize_responsivity(level_data, float(args.resp_min_irr_frac),
+                           float(args.resp_min_chan_frac), meta_base, out_path)
     print("Restart as7341_influx_nir.py to apply the new corrections "
           "and emit absolute irradiance per channel.")
 
@@ -715,6 +769,19 @@ def main():
                     help="Per level, include a channel only if its irradiance at the "
                          "channel center is at least this fraction of the max channel "
                          "irradiance at that level (filters out far-off-peak noise)")
+    ap.add_argument("--resp-min-chan-frac", type=float, default=0.1,
+                    help="Per channel, include a level only if the channel's irradiance "
+                         "is at least this fraction of that channel's strongest "
+                         "irradiance across the sweep (filters out out-of-band leakage, "
+                         "e.g. the 770 nm LED, whose flat noise-floor spectrum would "
+                         "otherwise pass the per-level relative test)")
+    ap.add_argument("--recompute", action="store_true",
+                    help="Re-derive corrections from an existing cal file's raw_levels "
+                         "(no hardware). Use to re-tune the contribution filters without "
+                         "repeating the LED sweep.")
+    ap.add_argument("--recompute-from", type=str, default=None,
+                    help="Path to the cal JSON to recompute from "
+                         "(default: <out-dir>/as7341_responsivity.json)")
     ap.add_argument("--c7000-dir", type=str, default=None,
                     help="Directory of pre-collected Seconic C-7000 native CSV exports. "
                          "Irradiance is loaded from these files; only AS7341 captures "
@@ -737,6 +804,12 @@ def main():
 
     print("=== AS7341 Calibration Guide ===")
     print(f"Phase: {args.phase}  |  Preset: {args.preset}  |  Output: {args.out_dir}")
+
+    # Offline path: recompute responsivity from stored captures — no sensor needed.
+    if args.recompute:
+        run_recompute(args)
+        print("\n=== Recompute complete ===")
+        return
 
     i2c = board.I2C()
     s = AS7341(i2c)
