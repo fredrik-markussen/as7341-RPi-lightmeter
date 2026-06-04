@@ -1,0 +1,549 @@
+﻿Date Saved,04/06/2026 15:51:03
+Title,AS7341-calRE2_037_02°_Under
+CoolLED_nm,660
+CoolLED_strength,25
+
+Measuring Mode,Ambient
+Viewing Angle [°],2
+Tcp [K],Under
+⊿uv,Under
+Illuminance [lx],351
+Illuminance [fc],32.6
+Peak Wavelength [nm],659
+Tristimulus Value X,900.1627
+Tristimulus Value Y,351.3139
+Tristimulus Value Z,16.1555
+CIE1931 x,0.7101
+CIE1931 y,0.2771
+CIE1931 z,0.0127
+CIE1976 u',0.5790
+CIE1976 v',0.5085
+Dominant Wavelength [nm],648
+Purity [%],96.2
+PPFD [umolm⁻²s⁻¹],32.3
+CRI Ra,Under
+CRI R1,Under
+CRI R2,Under
+CRI R3,Under
+CRI R4,Under
+CRI R5,Under
+CRI R6,Under
+CRI R7,Under
+CRI R8,Under
+CRI R9,Under
+CRI R10,Under
+CRI R11,Under
+CRI R12,Under
+CRI R13,Under
+CRI R14,Under
+CRI R15,Under
+TM-30 Rf,Under
+TM-30 Rg,Under
+SSIt,Under
+SSId,Under
+SSI1,---
+SSI2,---
+TLCI,Under
+TLMF,---
+
+Spectral Data 380[nm],0.000964053150
+Spectral Data 385[nm],0.001050745370
+Spectral Data 390[nm],0.000821957889
+Spectral Data 395[nm],0.000863419380
+Spectral Data 400[nm],0.001060941373
+Spectral Data 405[nm],0.000970783818
+Spectral Data 410[nm],0.000763771066
+Spectral Data 415[nm],0.000567279116
+Spectral Data 420[nm],0.000547983567
+Spectral Data 425[nm],0.000409286818
+Spectral Data 430[nm],0.000322875829
+Spectral Data 435[nm],0.000485817611
+Spectral Data 440[nm],0.000545503921
+Spectral Data 445[nm],0.000375656411
+Spectral Data 450[nm],0.000103115730
+Spectral Data 455[nm],0.000038984748
+Spectral Data 460[nm],0.000022777307
+Spectral Data 465[nm],0.000000000000
+Spectral Data 470[nm],0.000000000000
+Spectral Data 475[nm],0.000000000000
+Spectral Data 480[nm],0.000000000000
+Spectral Data 485[nm],0.000000000000
+Spectral Data 490[nm],0.000000000000
+Spectral Data 495[nm],0.000013785416
+Spectral Data 500[nm],0.000169237013
+Spectral Data 505[nm],0.000281046930
+Spectral Data 510[nm],0.000188149133
+Spectral Data 515[nm],0.000132291869
+Spectral Data 520[nm],0.000140862525
+Spectral Data 525[nm],0.000062476705
+Spectral Data 530[nm],0.000043436754
+Spectral Data 535[nm],0.000070228780
+Spectral Data 540[nm],0.000163584264
+Spectral Data 545[nm],0.000154166410
+Spectral Data 550[nm],0.000126387036
+Spectral Data 555[nm],0.000143324083
+Spectral Data 560[nm],0.000064257016
+Spectral Data 565[nm],0.000142262696
+Spectral Data 570[nm],0.000251725171
+Spectral Data 575[nm],0.000231956976
+Spectral Data 580[nm],0.000249499484
+Spectral Data 585[nm],0.000080284626
+Spectral Data 590[nm],0.000111926136
+Spectral Data 595[nm],0.000143705183
+Spectral Data 600[nm],0.000266472751
+Spectral Data 605[nm],0.000664434046
+Spectral Data 610[nm],0.001547050895
+Spectral Data 615[nm],0.003215238219
+Spectral Data 620[nm],0.006075081415
+Spectral Data 625[nm],0.010757980868
+Spectral Data 630[nm],0.018828485161
+Spectral Data 635[nm],0.032560776919
+Spectral Data 640[nm],0.054856576025
+Spectral Data 645[nm],0.089775808156
+Spectral Data 650[nm],0.141439840198
+Spectral Data 655[nm],0.198429703712
+Spectral Data 660[nm],0.218087121844
+Spectral Data 665[nm],0.175890311599
+Spectral Data 670[nm],0.107359372079
+Spectral Data 675[nm],0.056861355901
+Spectral Data 680[nm],0.028932424262
+Spectral Data 685[nm],0.013968166895
+Spectral Data 690[nm],0.005958172958
+Spectral Data 695[nm],0.002383225132
+Spectral Data 700[nm],0.001110696001
+Spectral Data 705[nm],0.000565395225
+Spectral Data 710[nm],0.000217225795
+Spectral Data 715[nm],0.000015353990
+Spectral Data 720[nm],0.000000783131
+Spectral Data 725[nm],0.000083451407
+Spectral Data 730[nm],0.000180536852
+Spectral Data 735[nm],0.000121875419
+Spectral Data 740[nm],0.000022020024
+Spectral Data 745[nm],0.000014314360
+Spectral Data 750[nm],0.000156727881
+Spectral Data 755[nm],0.000299901236
+Spectral Data 760[nm],0.000053002503
+Spectral Data 765[nm],0.000175212597
+Spectral Data 770[nm],0.000183271346
+Spectral Data 775[nm],0.000059745613
+Spectral Data 780[nm],0.000163177770
+
+Spectral Data 380[nm],0.000967201777
+Spectral Data 381[nm],0.000978427357
+Spectral Data 382[nm],0.000994672766
+Spectral Data 383[nm],0.001031724503
+Spectral Data 384[nm],0.001076084794
+Spectral Data 385[nm],0.001106935204
+Spectral Data 386[nm],0.001103456714
+Spectral Data 387[nm],0.001048611826
+Spectral Data 388[nm],0.000955173688
+Spectral Data 389[nm],0.000850043842
+Spectral Data 390[nm],0.000760208874
+Spectral Data 391[nm],0.000711494940
+Spectral Data 392[nm],0.000709283690
+Spectral Data 393[nm],0.000741477415
+Spectral Data 394[nm],0.000795415603
+Spectral Data 395[nm],0.000858495361
+Spectral Data 396[nm],0.000921429601
+Spectral Data 397[nm],0.000979979523
+Spectral Data 398[nm],0.001030330197
+Spectral Data 399[nm],0.001068667625
+Spectral Data 400[nm],0.001092019724
+Spectral Data 401[nm],0.001099773566
+Spectral Data 402[nm],0.001091726590
+Spectral Data 403[nm],0.001067676349
+Spectral Data 404[nm],0.001028266503
+Spectral Data 405[nm],0.000978719792
+Spectral Data 406[nm],0.000925799133
+Spectral Data 407[nm],0.000876269012
+Spectral Data 408[nm],0.000836192921
+Spectral Data 409[nm],0.000803867588
+Spectral Data 410[nm],0.000772754487
+Spectral Data 411[nm],0.000736242044
+Spectral Data 412[nm],0.000688013155
+Spectral Data 413[nm],0.000629989605
+Spectral Data 414[nm],0.000573238707
+Spectral Data 415[nm],0.000529304263
+Spectral Data 416[nm],0.000509671052
+Spectral Data 417[nm],0.000517925713
+Spectral Data 418[nm],0.000541886897
+Spectral Data 419[nm],0.000567500421
+Spectral Data 420[nm],0.000580711989
+Spectral Data 421[nm],0.000571102835
+Spectral Data 422[nm],0.000541938702
+Spectral Data 423[nm],0.000499710208
+Spectral Data 424[nm],0.000450907915
+Spectral Data 425[nm],0.000401769328
+Spectral Data 426[nm],0.000356932986
+Spectral Data 427[nm],0.000320309657
+Spectral Data 428[nm],0.000295801612
+Spectral Data 429[nm],0.000287109840
+Spectral Data 430[nm],0.000294801343
+Spectral Data 431[nm],0.000316966325
+Spectral Data 432[nm],0.000351627474
+Spectral Data 433[nm],0.000396777497
+Spectral Data 434[nm],0.000448420440
+Spectral Data 435[nm],0.000499739079
+Spectral Data 436[nm],0.000543728063
+Spectral Data 437[nm],0.000573389407
+Spectral Data 438[nm],0.000584418594
+Spectral Data 439[nm],0.000579581014
+Spectral Data 440[nm],0.000562817557
+Spectral Data 441[nm],0.000538069347
+Spectral Data 442[nm],0.000508692465
+Spectral Data 443[nm],0.000474771921
+Spectral Data 444[nm],0.000435208785
+Spectral Data 445[nm],0.000388901099
+Spectral Data 446[nm],0.000334903627
+Spectral Data 447[nm],0.000274359132
+Spectral Data 448[nm],0.000209895326
+Spectral Data 449[nm],0.000144171645
+Spectral Data 450[nm],0.000079878642
+Spectral Data 451[nm],0.000022222041
+Spectral Data 452[nm],0.000000000000
+Spectral Data 453[nm],0.000000000000
+Spectral Data 454[nm],0.000000000000
+Spectral Data 455[nm],0.000024590096
+Spectral Data 456[nm],0.000079434794
+Spectral Data 457[nm],0.000111090194
+Spectral Data 458[nm],0.000089293964
+Spectral Data 459[nm],0.000000000000
+Spectral Data 460[nm],0.000000000000
+Spectral Data 461[nm],0.000000000000
+Spectral Data 462[nm],0.000000000000
+Spectral Data 463[nm],0.000000000000
+Spectral Data 464[nm],0.000000000000
+Spectral Data 465[nm],0.000000000000
+Spectral Data 466[nm],0.000000000000
+Spectral Data 467[nm],0.000000000000
+Spectral Data 468[nm],0.000000000000
+Spectral Data 469[nm],0.000000000000
+Spectral Data 470[nm],0.000000000000
+Spectral Data 471[nm],0.000000000000
+Spectral Data 472[nm],0.000000000000
+Spectral Data 473[nm],0.000000000000
+Spectral Data 474[nm],0.000000000000
+Spectral Data 475[nm],0.000000000000
+Spectral Data 476[nm],0.000000000000
+Spectral Data 477[nm],0.000000000000
+Spectral Data 478[nm],0.000000000000
+Spectral Data 479[nm],0.000000000000
+Spectral Data 480[nm],0.000000000000
+Spectral Data 481[nm],0.000000000000
+Spectral Data 482[nm],0.000000000000
+Spectral Data 483[nm],0.000000000000
+Spectral Data 484[nm],0.000000000000
+Spectral Data 485[nm],0.000000000000
+Spectral Data 486[nm],0.000000000000
+Spectral Data 487[nm],0.000000000000
+Spectral Data 488[nm],0.000000000000
+Spectral Data 489[nm],0.000000000000
+Spectral Data 490[nm],0.000000000000
+Spectral Data 491[nm],0.000000000000
+Spectral Data 492[nm],0.000000000000
+Spectral Data 493[nm],0.000000000000
+Spectral Data 494[nm],0.000000000000
+Spectral Data 495[nm],0.000000000000
+Spectral Data 496[nm],0.000000000000
+Spectral Data 497[nm],0.000022457671
+Spectral Data 498[nm],0.000075092750
+Spectral Data 499[nm],0.000127084000
+Spectral Data 500[nm],0.000176785456
+Spectral Data 501[nm],0.000222531264
+Spectral Data 502[nm],0.000262019108
+Spectral Data 503[nm],0.000291960314
+Spectral Data 504[nm],0.000308952120
+Spectral Data 505[nm],0.000309592229
+Spectral Data 506[nm],0.000292621116
+Spectral Data 507[nm],0.000263733149
+Spectral Data 508[nm],0.000230030942
+Spectral Data 509[nm],0.000198617272
+Spectral Data 510[nm],0.000175666792
+Spectral Data 511[nm],0.000160893425
+Spectral Data 512[nm],0.000151277840
+Spectral Data 513[nm],0.000143791578
+Spectral Data 514[nm],0.000135590599
+Spectral Data 515[nm],0.000126898769
+Spectral Data 516[nm],0.000120567551
+Spectral Data 517[nm],0.000119540680
+Spectral Data 518[nm],0.000126720290
+Spectral Data 519[nm],0.000141176570
+Spectral Data 520[nm],0.000155611022
+Spectral Data 521[nm],0.000162160111
+Spectral Data 522[nm],0.000152962864
+Spectral Data 523[nm],0.000123923310
+Spectral Data 524[nm],0.000083709761
+Spectral Data 525[nm],0.000043794062
+Spectral Data 526[nm],0.000015648053
+Spectral Data 527[nm],0.000008952905
+Spectral Data 528[nm],0.000019959367
+Spectral Data 529[nm],0.000038925889
+Spectral Data 530[nm],0.000056087978
+Spectral Data 531[nm],0.000062161758
+Spectral Data 532[nm],0.000056764780
+Spectral Data 533[nm],0.000047539397
+Spectral Data 534[nm],0.000042428845
+Spectral Data 535[nm],0.000049321843
+Spectral Data 536[nm],0.000071072631
+Spectral Data 537[nm],0.000101741942
+Spectral Data 538[nm],0.000134523900
+Spectral Data 539[nm],0.000162612414
+Spectral Data 540[nm],0.000180700561
+Spectral Data 541[nm],0.000189005659
+Spectral Data 542[nm],0.000188995342
+Spectral Data 543[nm],0.000182137213
+Spectral Data 544[nm],0.000169983832
+Spectral Data 545[nm],0.000154835303
+Spectral Data 546[nm],0.000139335840
+Spectral Data 547[nm],0.000126129467
+Spectral Data 548[nm],0.000117773860
+Spectral Data 549[nm],0.000115206363
+Spectral Data 550[nm],0.000117824951
+Spectral Data 551[nm],0.000124958504
+Spectral Data 552[nm],0.000135927839
+Spectral Data 553[nm],0.000148859617
+Spectral Data 554[nm],0.000159429910
+Spectral Data 555[nm],0.000163013814
+Spectral Data 556[nm],0.000154986396
+Spectral Data 557[nm],0.000132475907
+Spectral Data 558[nm],0.000100830352
+Spectral Data 559[nm],0.000067894871
+Spectral Data 560[nm],0.000041516774
+Spectral Data 561[nm],0.000029101329
+Spectral Data 562[nm],0.000032969765
+Spectral Data 563[nm],0.000052091356
+Spectral Data 564[nm],0.000085369815
+Spectral Data 565[nm],0.000131628345
+Spectral Data 566[nm],0.000185925892
+Spectral Data 567[nm],0.000238028631
+Spectral Data 568[nm],0.000277305313
+Spectral Data 569[nm],0.000293130695
+Spectral Data 570[nm],0.000280169275
+Spectral Data 571[nm],0.000249557284
+Spectral Data 572[nm],0.000215727167
+Spectral Data 573[nm],0.000193111293
+Spectral Data 574[nm],0.000194031221
+Spectral Data 575[nm],0.000215003864
+Spectral Data 576[nm],0.000245490752
+Spectral Data 577[nm],0.000274925667
+Spectral Data 578[nm],0.000292970682
+Spectral Data 579[nm],0.000294597034
+Spectral Data 580[nm],0.000279947097
+Spectral Data 581[nm],0.000249364792
+Spectral Data 582[nm],0.000203203876
+Spectral Data 583[nm],0.000145344995
+Spectral Data 584[nm],0.000087025182
+Spectral Data 585[nm],0.000040328217
+Spectral Data 586[nm],0.000017337792
+Spectral Data 587[nm],0.000026416534
+Spectral Data 588[nm],0.000058611884
+Spectral Data 589[nm],0.000099681922
+Spectral Data 590[nm],0.000135378868
+Spectral Data 591[nm],0.000152610883
+Spectral Data 592[nm],0.000151561166
+Spectral Data 593[nm],0.000140902048
+Spectral Data 594[nm],0.000129444088
+Spectral Data 595[nm],0.000125879960
+Spectral Data 596[nm],0.000134323185
+Spectral Data 597[nm],0.000152939188
+Spectral Data 598[nm],0.000179495895
+Spectral Data 599[nm],0.000211763370
+Spectral Data 600[nm],0.000248939497
+Spectral Data 601[nm],0.000294110068
+Spectral Data 602[nm],0.000351016351
+Spectral Data 603[nm],0.000423399732
+Spectral Data 604[nm],0.000514595828
+Spectral Data 605[nm],0.000625457265
+Spectral Data 606[nm],0.000755898189
+Spectral Data 607[nm],0.000905831344
+Spectral Data 608[nm],0.001075363252
+Spectral Data 609[nm],0.001266988227
+Spectral Data 610[nm],0.001485112007
+Spectral Data 611[nm],0.001734218560
+Spectral Data 612[nm],0.002018754138
+Spectral Data 613[nm],0.002342549618
+Spectral Data 614[nm],0.002708559390
+Spectral Data 615[nm],0.003119597910
+Spectral Data 616[nm],0.003578479169
+Spectral Data 617[nm],0.004087951034
+Spectral Data 618[nm],0.004650537390
+Spectral Data 619[nm],0.005268717185
+Spectral Data 620[nm],0.005944966804
+Spectral Data 621[nm],0.006682706065
+Spectral Data 622[nm],0.007492526900
+Spectral Data 623[nm],0.008388329297
+Spectral Data 624[nm],0.009384033270
+Spectral Data 625[nm],0.010493674316
+Spectral Data 626[nm],0.011733803898
+Spectral Data 627[nm],0.013123360462
+Spectral Data 628[nm],0.014681375585
+Spectral Data 629[nm],0.016426991671
+Spectral Data 630[nm],0.018379060552
+Spectral Data 631[nm],0.020555060357
+Spectral Data 632[nm],0.022972717881
+Spectral Data 633[nm],0.025649772957
+Spectral Data 634[nm],0.028613219038
+Spectral Data 635[nm],0.031883675605
+Spectral Data 636[nm],0.035491004586
+Spectral Data 637[nm],0.039465133101
+Spectral Data 638[nm],0.043835856020
+Spectral Data 639[nm],0.048632089049
+Spectral Data 640[nm],0.053882386535
+Spectral Data 641[nm],0.059615302831
+Spectral Data 642[nm],0.065861590207
+Spectral Data 643[nm],0.072675555944
+Spectral Data 644[nm],0.080125764012
+Spectral Data 645[nm],0.088281005621
+Spectral Data 646[nm],0.097208097577
+Spectral Data 647[nm],0.106924258173
+Spectral Data 648[nm],0.117402158678
+Spectral Data 649[nm],0.128613442183
+Spectral Data 650[nm],0.140526905656
+Spectral Data 651[nm],0.152982294559
+Spectral Data 652[nm],0.165651097894
+Spectral Data 653[nm],0.178194329143
+Spectral Data 654[nm],0.190272271633
+Spectral Data 655[nm],0.201456800103
+Spectral Data 656[nm],0.211148083210
+Spectral Data 657[nm],0.218726590276
+Spectral Data 658[nm],0.223572865129
+Spectral Data 659[nm],0.225245028734
+Spectral Data 660[nm],0.223828732967
+Spectral Data 661[nm],0.219507172704
+Spectral Data 662[nm],0.212463542819
+Spectral Data 663[nm],0.202923476696
+Spectral Data 664[nm],0.191309824586
+Spectral Data 665[nm],0.178102687001
+Spectral Data 666[nm],0.163782179356
+Spectral Data 667[nm],0.148819521070
+Spectral Data 668[nm],0.133714511991
+Spectral Data 669[nm],0.118966460228
+Spectral Data 670[nm],0.105072155595
+Spectral Data 671[nm],0.092502102256
+Spectral Data 672[nm],0.081375919282
+Spectral Data 673[nm],0.071541309357
+Spectral Data 674[nm],0.062837213278
+Spectral Data 675[nm],0.055103436112
+Spectral Data 676[nm],0.048219185323
+Spectral Data 677[nm],0.042119093239
+Spectral Data 678[nm],0.036741964519
+Spectral Data 679[nm],0.032026581466
+Spectral Data 680[nm],0.027906447649
+Spectral Data 681[nm],0.024301081896
+Spectral Data 682[nm],0.021127711982
+Spectral Data 683[nm],0.018303565681
+Spectral Data 684[nm],0.015755705535
+Spectral Data 685[nm],0.013462730683
+Spectral Data 686[nm],0.011420094408
+Spectral Data 687[nm],0.009623261169
+Spectral Data 688[nm],0.008066710085
+Spectral Data 689[nm],0.006734036840
+Spectral Data 690[nm],0.005602056161
+Spectral Data 691[nm],0.004647483118
+Spectral Data 692[nm],0.003847167594
+Spectral Data 693[nm],0.003182019573
+Spectral Data 694[nm],0.002637569327
+Spectral Data 695[nm],0.002199599519
+Spectral Data 696[nm],0.001853888039
+Spectral Data 697[nm],0.001585395774
+Spectral Data 698[nm],0.001377362292
+Spectral Data 699[nm],0.001212809002
+Spectral Data 700[nm],0.001074756961
+Spectral Data 701[nm],0.000949041278
+Spectral Data 702[nm],0.000833097147
+Spectral Data 703[nm],0.000727347855
+Spectral Data 704[nm],0.000632216688
+Spectral Data 705[nm],0.000547915173
+Spectral Data 706[nm],0.000472902670
+Spectral Data 707[nm],0.000404757098
+Spectral Data 708[nm],0.000341048813
+Spectral Data 709[nm],0.000279386149
+Spectral Data 710[nm],0.000217776396
+Spectral Data 711[nm],0.000154625974
+Spectral Data 712[nm],0.000088379180
+Spectral Data 713[nm],0.000017483475
+Spectral Data 714[nm],0.000000000000
+Spectral Data 715[nm],0.000000000000
+Spectral Data 716[nm],0.000000000000
+Spectral Data 717[nm],0.000000000000
+Spectral Data 718[nm],0.000000000000
+Spectral Data 719[nm],0.000000000000
+Spectral Data 720[nm],0.000000000000
+Spectral Data 721[nm],0.000000000000
+Spectral Data 722[nm],0.000000000000
+Spectral Data 723[nm],0.000000000000
+Spectral Data 724[nm],0.000019578962
+Spectral Data 725[nm],0.000081119259
+Spectral Data 726[nm],0.000131473760
+Spectral Data 727[nm],0.000166957354
+Spectral Data 728[nm],0.000188649021
+Spectral Data 729[nm],0.000198109570
+Spectral Data 730[nm],0.000196899884
+Spectral Data 731[nm],0.000186885532
+Spectral Data 732[nm],0.000171226158
+Spectral Data 733[nm],0.000153425062
+Spectral Data 734[nm],0.000136985531
+Spectral Data 735[nm],0.000124870436
+Spectral Data 736[nm],0.000113685950
+Spectral Data 737[nm],0.000096110423
+Spectral Data 738[nm],0.000064776556
+Spectral Data 739[nm],0.000012563645
+Spectral Data 740[nm],0.000000000000
+Spectral Data 741[nm],0.000000000000
+Spectral Data 742[nm],0.000000000000
+Spectral Data 743[nm],0.000000000000
+Spectral Data 744[nm],0.000000000000
+Spectral Data 745[nm],0.000000000000
+Spectral Data 746[nm],0.000000000000
+Spectral Data 747[nm],0.000028037815
+Spectral Data 748[nm],0.000079553356
+Spectral Data 749[nm],0.000114631315
+Spectral Data 750[nm],0.000145124708
+Spectral Data 751[nm],0.000182965756
+Spectral Data 752[nm],0.000239555433
+Spectral Data 753[nm],0.000309661613
+Spectral Data 754[nm],0.000369563204
+Spectral Data 755[nm],0.000394652569
+Spectral Data 756[nm],0.000360378530
+Spectral Data 757[nm],0.000258065935
+Spectral Data 758[nm],0.000119436794
+Spectral Data 759[nm],0.000000000000
+Spectral Data 760[nm],0.000000000000
+Spectral Data 761[nm],0.000000000000
+Spectral Data 762[nm],0.000000000000
+Spectral Data 763[nm],0.000000000000
+Spectral Data 764[nm],0.000090246147
+Spectral Data 765[nm],0.000191751460
+Spectral Data 766[nm],0.000274723337
+Spectral Data 767[nm],0.000327744987
+Spectral Data 768[nm],0.000339617400
+Spectral Data 769[nm],0.000299271749
+Spectral Data 770[nm],0.000209018806
+Spectral Data 771[nm],0.000097643526
+Spectral Data 772[nm],0.000000000000
+Spectral Data 773[nm],0.000000000000
+Spectral Data 774[nm],0.000000000000
+Spectral Data 775[nm],0.000007252951
+Spectral Data 776[nm],0.000085609252
+Spectral Data 777[nm],0.000154504349
+Spectral Data 778[nm],0.000186544770
+Spectral Data 779[nm],0.000180489355
+Spectral Data 780[nm],0.000153720364
+
+TM-30 Color Vector Graphic,Reference Illuminant x,Reference Illuminant y,Measured Illuminant x,Measured Illuminant y
+bin1,-3,-3,-3,-3
+bin2,-3,-3,-3,-3
+bin3,-3,-3,-3,-3
+bin4,-3,-3,-3,-3
+bin5,-3,-3,-3,-3
+bin6,-3,-3,-3,-3
+bin7,-3,-3,-3,-3
+bin8,-3,-3,-3,-3
+bin9,-3,-3,-3,-3
+bin10,-3,-3,-3,-3
+bin11,-3,-3,-3,-3
+bin12,-3,-3,-3,-3
+bin13,-3,-3,-3,-3
+bin14,-3,-3,-3,-3
+bin15,-3,-3,-3,-3
+bin16,-3,-3,-3,-3
