@@ -663,6 +663,53 @@ python3 src/as7341_calibrate.py --phase responsivity --c7000-dir C-7000_out/
 3. The 770 nm (and marginally 740 nm) LEDs add little to VIS8; the floor makes
    them harmless, so no need to drop them from future sweeps.
 
+### Broadband validation confirmed nm415 over-reports → correction tool
+
+Full-sweep run completed (45/45, auto-drop fired on 10 bright steps, guard never
+misfired). Result corrections: nm415 6.13, nm445 2.20, nm480 1.56, nm515 1.15,
+nm555 1.00, nm590 0.88, nm630 0.64, nm680 0.48 (red firmed up, n=5–6).
+
+Side-by-side broadband check (RPi vs C-7000, 4320 lux / 7405 K, in
+`C-7000_out/comparisons/`) band-integrated over each channel:
+
+| Ch | RPi / C-7000(band) |
+|---|---|
+| 415 | **2.68** (outlier) |
+| 445 | 1.59 |
+| 480–680 | 1.31–1.47 (mean ≈1.39, consistent) |
+
+So 480–680 share a uniform ~1.39× absolute offset (does not distort shape/PFD);
+**nm415 reads ~1.9× too high** and nm445 mildly high — the predicted edge effect
+(their calibration LEDs all sit at/below the channel band).
+
+New tool `src/as7341_apply_validation.py` scales channel responsivities to match a
+broadband C-7000 reference:
+- `--fix-channels 415,445` (default): flatten only those to the median ratio of the
+  others — corrects spectral shape, keeps the well-behaved channels + absolute
+  scale. Applied tonight: nm415 6.13→3.17, nm445 2.20→1.92, rest unchanged.
+- `--fix-channels all`: scale every channel by its ratio (absolute match).
+- `--pair REF.csv:RPI.csv` repeatable; ratios combined as geometric mean. Records
+  provenance under `meta.validation`. Pure data — no hardware; testable off-Pi by
+  stubbing imports (see `claude_wd/preview_band_integration.py`).
+
+Run on the Pi (against its fresh full-sweep cal), then restart + commit:
+```bash
+git pull
+python3 src/as7341_apply_validation.py \
+  --pair "C-7000_out/comparisons/AS7341-calRE2_046_02°_7405K.csv:C-7000_out/comparisons/RPi_Light Spectrum (W_m2_nm)-data-2026-06-04 19_51_31.csv"
+sudo systemctl restart as7341
+git add as7341_responsivity.json && git commit -m "Phase 2 cal: blue validation correction" && git push
+```
+
+**Morning:** take 2–3 direct-sun RPi-vs-C-7000 pairs at different CCT and re-derive
+with all `--pair`s — that firms up the red/absolute end (the 7405 K source is
+blue-heavy, so red ratios here rest on weaker signal). Consider `--fix-channels
+all` once multiple references agree, to also remove the ~1.39× absolute offset.
+
+NOTE: the fresh full-sweep `as7341_responsivity.json` and the blue correction live
+only on the Pi until committed there; the WSL repo still shows the old session-6
+cal.
+
 ### Files touched this session
 - `C-7000_out/` — old set removed, 45 calRE2 files added + CoolLED metadata.
 - `src/as7341_calibrate.py` — `_compute_responsivity`, `_finalize_responsivity`,
