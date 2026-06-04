@@ -631,7 +631,21 @@ re-captures instead of skipping:
 - Only if SUN still saturates does it offer skip/retry.
 
 LO gives ~80× headroom over HI (16× gain × 5× IT), so most drops resolve at LO in
-one step. Re-run on hardware to recover the skipped steps:
+one step.
+
+**Physical-sanity guard.** In the first auto-drop run, step 12 (460 nm @ 100 %)
+read near-zero — the LED was off/mid-transition when Enter was pressed, and since
+the value was neither saturating nor below the low threshold (~138 raw vs lo_th
+~54) it was silently accepted. Because BasicCounts is preset-normalised and the
+C-7000 levels are sorted ascending by strength, a higher-strength capture of the
+same LED must not read *dimmer* than a lower one. The loop now rejects a capture
+whose peak BC < 0.6× the same LED's previous (lower-strength) peak and re-prompts
+(accept-anyway `[a]` available). This is robust to the cause (stale frame, LED
+off, etc.). Note: this matches the proven live measurement-script switch, which
+needs only a frame discard — the human "press Enter" delay already settles the
+sensor after a preset change, so no extra sleep was added.
+
+Re-run on hardware to recover the skipped steps:
 ```bash
 python3 src/as7341_calibrate.py --phase responsivity --c7000-dir C-7000_out/
 ```

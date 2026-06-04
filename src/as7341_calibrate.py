@@ -567,6 +567,7 @@ def run_phase2(s, args):
     level_data = []  # list of dicts: {"led_nm", "bc8", "irr8", "preset"}
     presets_used = set()
     sensor_preset = "hi"  # tracks the preset actually loaded on the sensor
+    led_bc_peak = {}      # led_nm -> max bc8 of its last accepted level (ascending strength)
 
     if args.c7000_dir:
         n = len(c7000_levels)
@@ -604,6 +605,22 @@ def run_phase2(s, args):
                 if peak <= ctx["lo_th"]:
                     print(f"  [WARN] Signal too low (peak={int(peak)}) — increase intensity.")
                     continue
+                # Physical-sanity guard: higher strength of the same LED must not read
+                # dimmer (BasicCounts is preset-normalised). Catches a stale/empty
+                # frame or the LED being off/mid-transition when Enter was pressed —
+                # readings that are neither saturating nor below the low threshold.
+                vis_chk = [max(0.0, v - d) for v, d in zip(vis_raw, ctx["dv"])]
+                peak_bc = max(v / ctx["denom"] for v in vis_chk)
+                prev = led_bc_peak.get(led_nm)
+                if prev is not None and peak_bc < 0.6 * prev:
+                    print(f"  [WARN] {led_nm} nm at {strength}% reads dimmer "
+                          f"(peak BC {peak_bc:.4f}) than a lower strength of the same "
+                          f"LED ({prev:.4f}) — likely LED off/transitioning or a bad "
+                          "frame. Check the pE-4000 and re-capture.")
+                    choice = input("  Re-capture [Enter] or accept anyway [a]: ").strip().lower()
+                    if choice != "a":
+                        continue
+                led_bc_peak[led_nm] = max(peak_bc, prev or 0.0)
                 break
             if skip:
                 print("  Step skipped.")
