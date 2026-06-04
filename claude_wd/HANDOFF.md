@@ -701,17 +701,64 @@ sudo systemctl restart as7341
 git add as7341_responsivity.json && git commit -m "Phase 2 cal: blue validation correction" && git push
 ```
 
-**Morning:** take 2–3 direct-sun RPi-vs-C-7000 pairs at different CCT and re-derive
-with all `--pair`s — that firms up the red/absolute end (the 7405 K source is
-blue-heavy, so red ratios here rest on weaker signal). Consider `--fix-channels
-all` once multiple references agree, to also remove the ~1.39× absolute offset.
+### Blue correction applied and verified
 
-NOTE: the fresh full-sweep `as7341_responsivity.json` and the blue correction live
-only on the Pi until committed there; the WSL repo still shows the old session-6
-cal.
+Ran the tool on the Pi against the 7405 K reference, restarted, and re-read the
+RPi side-by-side. nm415 ratio dropped from **2.68 → 1.40**, landing inside the
+family; nm445 1.59 → 1.33. All 8 channels now within **1.27–1.44** (mean 1.35) —
+spectral shape is consistent end-to-end, blue over-report gone. The remaining
+**~1.35× uniform absolute offset** (RPi reads ~35 % high across all channels
+equally) does not distort shape/PFD and is deferred to the sun-validation step.
 
 ### Files touched this session
-- `C-7000_out/` — old set removed, 45 calRE2 files added + CoolLED metadata.
-- `src/as7341_calibrate.py` — `_compute_responsivity`, `_finalize_responsivity`,
-  `run_recompute`, `--resp-min-chan-frac`, `--recompute[-from]`.
-- `claude_wd/HANDOFF.md` — this section.
+- `C-7000_out/` — old set removed; 45 `calRE2` files added + CoolLED metadata
+  backfilled; `comparisons/` holds the 7405 K validation pair (C-7000 + RPi CSV).
+- `src/as7341_calibrate.py` — band integration (`_band_average`, `BANDWIDTHS_NM`),
+  `_compute_responsivity` + per-channel floor (`--resp-min-chan-frac`),
+  `_finalize_responsivity`, `run_recompute`/`--recompute[-from]`, auto-preset-drop
+  (`_preset_ctx`, HI→LO→SUN), dimmer-than-lower-strength sanity guard.
+- `src/as7341_apply_validation.py` — NEW broadband-validation correction tool.
+- `src/as7341_influx_nir.py` — unchanged (consumes the cal file as-is).
+- `claude_wd/preview_band_integration.py` — offline preview/diagnostic (untracked).
+- `.gitignore`, `README`/`FSD` wording, `claude_wd/HANDOFF.md`.
+
+---
+
+## NEXT SESSION (tomorrow) — sun validation + absolute scale
+
+**State at handoff:** calibration pipeline is solid and the Pi service is running
+on the full-sweep cal with the blue (nm415/445) correction applied. Spectral shape
+validated against one indoor broadband source. Only the absolute scale is open.
+
+**State of the cal file.** The full-sweep + blue-corrected
+`as7341_responsivity.json` is committed and pushed (`9d4fda2` "Phase 2 cal: blue
+validation correction") and the repo is in sync across Pi and WSL. Just `git pull`
+at the start to be current. Active corrections: nm415 3.17, nm445 1.92, nm480 1.56,
+nm515 1.15, nm555 1.00, nm590 0.88, nm630 0.64, nm680 0.48 (`meta.validation` logs
+the blue fix).
+
+**Goal:** remove the ~1.35× absolute offset and confirm the red end with a
+red-rich source.
+
+1. Collect **2–3 side-by-side pairs in steady direct sun** (no passing cloud),
+   different CCT if possible. Each pair = C-7000 native export + the RPi Grafana
+   "wavelength_nm,last" CSV, captured within the same minute, both diffusers seeing
+   the same field. Drop them in `C-7000_out/comparisons/`.
+2. Re-derive across all references, absolute match:
+   ```bash
+   python3 src/as7341_apply_validation.py \
+     --pair "sunA_c7000.csv:sunA_rpi.csv" \
+     --pair "sunB_c7000.csv:sunB_rpi.csv" --fix-channels all --dry-run
+   ```
+   Check the table (ratios should be ~1.3–1.4 and consistent; red now on strong
+   signal). Drop `--dry-run`, `sudo systemctl restart as7341`, commit + push the
+   cal from the Pi.
+3. Sanity-check live PFD/irr against the C-7000 in sun. If nm680 still lags badly
+   even after absolute match, that's the genuine 670–700 nm LED-coverage gap —
+   options then: add a 680–700 nm source and re-sweep, or replace the Gaussian
+   edge-channel model with the AS7341 datasheet response curves.
+
+**Tooling note:** `as7341_apply_validation.py` is pure data (no hardware); test
+changes off-Pi by stubbing imports as in `claude_wd/preview_band_integration.py`.
+Every correction is logged under `meta.validation` in the cal file and is
+reversible. `--recompute` re-derives from stored `raw_levels` without re-sweeping.
