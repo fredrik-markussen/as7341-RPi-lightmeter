@@ -613,8 +613,32 @@ nm415=0.16, nm445=0.12, nm480=0.19; should be ~datasheet ≥1.3). Root cause:
   670–700 nm. These edge channels remain the weak point; **outdoor validation
   against the C-7000 is the arbiter** before trusting blue.
 
+### Auto-preset-drop on saturation (added same session)
+
+The first run skipped 14 bright steps (50/100 %) that saturated the HI preset,
+forcing the thin red channels onto the dimmer, noisier 25 % levels (no bias —
+`BC/irr` is linear across intensities, confirmed ×1.00–1.06 spread — but lower
+SNR). Since BasicCounts = (raw − dark)/(gain × IT) is **preset-independent**, a
+bright LED that rails HI can be captured at LO/SUN at the same scale.
+
+`run_phase2` (`--c7000-dir` path) now **auto-drops HI→LO→SUN on saturation** and
+re-captures instead of skipping:
+- `_preset_ctx(s, preset, out_dir)` applies a preset, loads its dark file, returns
+  dark/denom/thresholds, and discards one settle frame after the register change.
+- Each step restarts at HI (re-applied only if a prior step's drop left the sensor
+  at LO/SUN — tracked via `sensor_preset`); on saturation it steps down the chain.
+- Per-level `preset` recorded in `raw_levels`; `meta.presets_used` lists them.
+- Only if SUN still saturates does it offer skip/retry.
+
+LO gives ~80× headroom over HI (16× gain × 5× IT), so most drops resolve at LO in
+one step. Re-run on hardware to recover the skipped steps:
+```bash
+python3 src/as7341_calibrate.py --phase responsivity --c7000-dir C-7000_out/
+```
+
 ### What needs doing next
-1. **On the Pi, regenerate without re-sweeping** (reads the raw_levels just saved):
+1. **On the Pi, regenerate** — either re-sweep (above, now recovers all 45 steps)
+   or, if not re-sweeping, recompute from the saved captures (no hardware):
    ```bash
    git pull
    python3 src/as7341_calibrate.py --recompute

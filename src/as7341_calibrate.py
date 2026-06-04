@@ -112,6 +112,25 @@ def dark_offsets(darkJ, s, atime, astep):
     dn = int(darkJ.get("nir",   0)) if ok else 0
     return dv, dc, dn
 
+def _preset_ctx(s, preset_name, out_dir):
+    """Apply a preset and return everything needed to capture/normalise at it.
+
+    BasicCounts = (raw - dark) / (gain x integration_ms) is preset-independent, so
+    a bright LED that saturates HI can be captured at LO/SUN and the resulting bc8
+    is on the same scale. Each preset uses its own dark file. A frame is discarded
+    after the gain/timing change so the first averaged frame is not stale.
+    """
+    atime, astep, it_ms, fs, gnum = apply_preset(s, preset_name)
+    darkJ = load_dark(Path(out_dir) / f"as7341_dark_{preset_name}.json")
+    if darkJ is None:
+        print(f"  [WARN] as7341_dark_{preset_name}.json not found — "
+              "dark correction inactive at this preset.")
+    dv, _, _ = dark_offsets(darkJ, s, atime, astep)
+    read_once(s)  # settle: discard one frame after the register change
+    return {"name": preset_name, "it_ms": it_ms, "fs": fs, "dv": dv,
+            "denom": max(1e-9, gnum * it_ms),
+            "sat_th": 0.95 * fs, "lo_th": 0.003 * fs}
+
 def header(text):
     bar = "=" * (len(text) + 4)
     print(f"\n{bar}\n  {text}\n{bar}")
@@ -539,49 +558,66 @@ def run_phase2(s, args):
               f"{', '.join(str(w) for w in wavelengths)} nm")
         print("The C-7000 data can be entered as a CSV export or typed manually.")
 
-    atime, astep, it_ms, fs, gnum = apply_preset(s, "hi")
-    print(f"\nUsing HI preset: gain={s.gain}, IT={it_ms:.1f}ms")
+    # Preset chain for auto-drop on saturation (gain decreases down the chain).
+    PRESET_CHAIN = ["hi", "lo", "sun"]
+    hi_ctx = _preset_ctx(s, "hi", args.out_dir)
+    print(f"\nStarting at HI preset (gain={s.gain}, IT={hi_ctx['it_ms']:.1f}ms). "
+          "Auto-drops to LO/SUN on saturation; BasicCounts is preset-normalised.")
 
-    dark_path = Path(args.out_dir) / "as7341_dark_hi.json"
-    darkJ = load_dark(dark_path)
-    if darkJ is None:
-        print(f"[WARN] {dark_path.name} not found — dark correction inactive for this phase.")
-    dv, dc, _ = dark_offsets(darkJ, s, atime, astep)
-    denom = max(1e-9, gnum * it_ms)
-    sat_th = 0.95 * fs; lo_th = 0.003 * fs
-
-    level_data = []  # list of dicts: {"led_nm", "bc8", "irr8"}
+    level_data = []  # list of dicts: {"led_nm", "bc8", "irr8", "preset"}
+    presets_used = set()
+    sensor_preset = "hi"  # tracks the preset actually loaded on the sensor
 
     if args.c7000_dir:
         n = len(c7000_levels)
         for k, (led_nm, strength, irr8) in enumerate(c7000_levels):
             str_label = f" at {strength}%" if strength is not None else ""
             print(f"\n--- Step {k+1}/{n}: set pE-4000 to {led_nm} nm{str_label} ---")
+            # Every step restarts at HI (a dim LED may follow a bright one). Only
+            # re-apply if a previous step's auto-drop left the sensor at LO/SUN.
+            if sensor_preset != "hi":
+                hi_ctx = _preset_ctx(s, "hi", args.out_dir); sensor_preset = "hi"
+            ctx = hi_ctx; cur = "hi"
             skip = False
             while True:
-                input("  Press Enter to capture AS7341 reading...")
+                input(f"  [{cur.upper()}] Press Enter to capture AS7341 reading...")
                 vis_raw, _, _ = avg_frames(s, args.resp_avg)
                 peak = max(vis_raw)
-                if peak >= sat_th:
-                    print(f"  [WARN] Saturating (peak={int(peak)}, FS={fs}) — "
-                          "cannot use this reading (C-7000 irradiance was at the original intensity).")
-                    choice = input("  Skip this step [s] or retry after adjusting [Enter]: ").strip().lower()
+                if peak >= ctx["sat_th"]:
+                    idx = PRESET_CHAIN.index(cur)
+                    if idx + 1 < len(PRESET_CHAIN):
+                        nxt = PRESET_CHAIN[idx + 1]
+                        print(f"  [INFO] Saturating at {cur.upper()} "
+                              f"(peak={int(peak)}/{int(ctx['fs'])}) — dropping to "
+                              f"{nxt.upper()} and re-capturing.")
+                        ctx = _preset_ctx(s, nxt, args.out_dir); cur = nxt
+                        sensor_preset = nxt
+                        continue
+                    print(f"  [WARN] Still saturating at {cur.upper()} "
+                          f"(peak={int(peak)}/{int(ctx['fs'])}) — lower the pE-4000 intensity.")
+                    choice = input("  Skip this step [s] or retry [Enter]: ").strip().lower()
                     if choice == "s":
-                        skip = True
-                        break
+                        skip = True; break
+                    ctx = _preset_ctx(s, "hi", args.out_dir); cur = "hi"
+                    sensor_preset = "hi"
                     continue
-                if peak <= lo_th:
+                if peak <= ctx["lo_th"]:
                     print(f"  [WARN] Signal too low (peak={int(peak)}) — increase intensity.")
                     continue
                 break
             if skip:
-                print(f"  Step skipped.")
+                print("  Step skipped.")
                 continue
-            vis = [max(0.0, v - d) for v, d in zip(vis_raw, dv)]
-            bc8 = [v / denom for v in vis]
-            print(f"  BasicCounts: { {b: round(x,4) for b,x in zip(BANDS8, bc8)} }")
-            level_data.append({"led_nm": led_nm, "bc8": bc8, "irr8": irr8})
+            vis = [max(0.0, v - d) for v, d in zip(vis_raw, ctx["dv"])]
+            bc8 = [v / ctx["denom"] for v in vis]
+            presets_used.add(cur)
+            print(f"  [{cur.upper()}] BasicCounts: { {b: round(x,4) for b,x in zip(BANDS8, bc8)} }")
+            level_data.append({"led_nm": led_nm, "bc8": bc8, "irr8": irr8, "preset": cur})
     else:
+        # Interactive path captures at HI only; user dials intensity to fit.
+        dv = hi_ctx["dv"]; denom = hi_ctx["denom"]; fs = hi_ctx["fs"]
+        sat_th = hi_ctx["sat_th"]; lo_th = hi_ctx["lo_th"]
+        presets_used.add("hi")
         n = len(wavelengths)
         for k, led_nm in enumerate(wavelengths):
             print(f"\n--- Level {k+1}/{n}: set pE-4000 to single LED at {led_nm} nm ---")
@@ -602,13 +638,16 @@ def run_phase2(s, args):
             bc8 = [v / denom for v in vis]
             print(f"  BasicCounts: { {b: round(x,4) for b,x in zip(BANDS8, bc8)} }")
             irr8 = _get_irradiance_for_level(k+1, n, led_nm)
-            level_data.append({"led_nm": led_nm, "bc8": bc8, "irr8": irr8})
+            level_data.append({"led_nm": led_nm, "bc8": bc8, "irr8": irr8, "preset": "hi"})
 
     # Per-channel responsivity: see _compute_responsivity for the two filters.
+    # gain/it_ms record the HI reference preset; BasicCounts is preset-normalised
+    # so LO/SUN auto-drop captures are on the same scale.
     meta_base = {
-        "gain": str(s.gain), "it_ms": it_ms,
+        "gain": PRESETS["hi"]["gain_str"], "it_ms": hi_ctx["it_ms"],
         "wavelengths_nm": wavelengths,
         "resp_avg_frames": args.resp_avg,
+        "presets_used": sorted(presets_used),
         "instrument": "Seconic C-7000",
         "source": "CoolLED pE-4000, single-LED mode (wavelength sweep)",
     }
