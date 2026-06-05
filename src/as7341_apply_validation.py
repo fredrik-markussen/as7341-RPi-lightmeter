@@ -29,7 +29,7 @@ Examples:
   # morning: add direct-sun references and re-derive across all of them
   python3 src/as7341_apply_validation.py --pair "sun_c7000.csv:sun_rpi.csv" --pair ...
 """
-import argparse, json, math, re, sys
+import argparse, datetime, json, math, re, sys
 from pathlib import Path
 from statistics import median
 
@@ -50,10 +50,43 @@ def read_c7000_spd(path):
     return spd
 
 
-def read_rpi_csv(path):
-    """Grafana export (Time,wavelength_nm,last) -> irr8 at WLS8 (mean per wavelength)."""
+def read_rpi_csv(path, sel_time=None):
+    """RPi export -> irr8 (W/m^2/nm) at WLS8. Two layouts auto-detected:
+
+      long  (Time,wavelength_nm,last)   -> mean per wavelength (legacy Grafana).
+      wide  (Time,415,445,...,680)      -> the row nearest sel_time ("HH:MM"),
+                                           or the last row when sel_time is None.
+
+    Wide is Grafana's "join by field" export: one column per VIS8 channel, one
+    row per timestamp. Shape comparisons are time-insensitive (the per-channel
+    ratio's absolute factor cancels), so the last row is a safe default; pass
+    --rpi-time to anchor an absolute (--fix-channels all) match to a capture time.
+    """
+    lines = Path(path).read_text(errors="replace").splitlines()
+    header = [h.strip().strip('"') for h in lines[0].split(",")] if lines else []
+    if header[:1] == ["Time"] and {str(w) for w in cal.WLS8}.issubset(header):
+        col = {w: header.index(str(w)) for w in cal.WLS8}
+        rows = []
+        for line in lines[1:]:
+            parts = [p.strip().strip('"') for p in line.split(",")]
+            if not parts or not parts[0]:
+                continue
+            try:
+                t = datetime.datetime.strptime(parts[0], "%Y-%m-%d %H:%M:%S")
+                irr8 = [float(parts[col[w]]) for w in cal.WLS8]
+            except (ValueError, IndexError):
+                continue  # header / blank / partial row
+            rows.append((t, irr8))
+        if not rows:
+            raise SystemExit(f"No data rows in wide RPi CSV {path}")
+        if sel_time is None:
+            return rows[-1][1]
+        hh, mm = (int(x) for x in sel_time.split(":"))
+        return min(rows, key=lambda kv: abs((kv[0].hour * 60 + kv[0].minute)
+                                            - (hh * 60 + mm)))[1]
+    # legacy long format
     acc = {}
-    for line in Path(path).read_text(errors="replace").splitlines():
+    for line in lines:
         parts = [p.strip().strip('"') for p in line.split(",")]
         if len(parts) < 3:
             continue
@@ -77,6 +110,9 @@ def main():
                     help="C-7000 reference CSV : RPi export CSV (repeatable)")
     ap.add_argument("--fix-channels", default="415,445",
                     help="comma-separated channel centers to correct, or 'all'")
+    ap.add_argument("--rpi-time", default=None, metavar="HH:MM",
+                    help="for wide joinbyfield RPi CSVs, use the row nearest this "
+                         "local time (default: last row)")
     ap.add_argument("--dry-run", action="store_true", help="preview, do not write")
     args = ap.parse_args()
 
@@ -89,7 +125,7 @@ def main():
         ref, rpi = pair.rsplit(":", 1)
         spd = read_c7000_spd(ref)
         c7 = [cal._band_average(spd, c, fw) for c, fw in zip(cal.WLS8, cal.BANDWIDTHS_NM)]
-        r = read_rpi_csv(rpi)
+        r = read_rpi_csv(rpi, args.rpi_time)
         for i in range(8):
             if c7[i] <= 0 or r[i] <= 0:
                 raise SystemExit(f"Non-positive irradiance at {cal.WLS8[i]}nm in {pair}")

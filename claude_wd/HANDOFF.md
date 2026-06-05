@@ -762,3 +762,89 @@ red-rich source.
 changes off-Pi by stubbing imports as in `claude_wd/preview_band_integration.py`.
 Every correction is logged under `meta.validation` in the cal file and is
 reversible. `--recompute` re-derives from stored `raw_levels` without re-sweeping.
+
+---
+
+## Session 11 — Co-pointed morning-sun validation + full correction applied (2026-06-05)
+
+Pushed on `main`. **Cal file changed:** `as7341_responsivity.json` got a second
+`meta.validation` entry (mode `all`) — shape + absolute corrected against direct sun.
+
+### Data (`C-7000_out/comparisons/`)
+- `AS7341-c7000REF_001..005_*.csv` — C-7000 reads, taken ~evenly 06:50→09:00 to catch
+  rising sun. **C-7000 file timestamps are EXPORT time** (one 09:01 burst), not capture
+  time. File order ≠ capture order; CCT rises 002→005 (5092→5263 K) ⇒ 002,003,004,005
+  are the morning sequence. **001 (1740 lux, 9229 K, blue peak) = skylight/shade →
+  discarded.**
+- `Rpi_Light…joinbyfield-…09_00_41.csv` — RPi **wide** dataframe (`Time,415…680`,
+  1-min, dawn 03:01 → 09:00:07), same local clock.
+- **C-7000 was right next to the Pi at the same angle** (operator-confirmed) ⇒ co-pointed,
+  so the absolute comparison is valid (no horizontal-vs-aimed geometry confound).
+
+### Finding
+RPi vs C-7000 (band-integrated, normalised 555), stable across all 4 sun reads and
+~flat vs sun elevation: **blue over-reads** (415 ×1.55, 445 ×1.19, 480 ×1.14), mids
+agree, **red under-reads** (630 ×0.92, 680 ×0.89). Elevation-flatness ⇒ this is a fixed
+shape error, not geometry. So Session 10's indoor 7405 K blue fix **under-corrected for
+sun** — blue was still ~1.5× high against the real use case. (415 history: Phase 2 raw
+6.13 → indoor 3.17 → **sun 2.13**, converging to datasheet 2.0.)
+
+### Absolute scale
+Morning was cloudy (RPi_555 swings 0.56↔2.35 within 15 min), so only **read 005 @ 09:00**
+is cleanly time-matchable: its target RPi_555 (1.31 × 1.673 = 2.19) lands on the RPi
+final row (09:00:07 = 2.20) ⇒ **K = 1.315**, corroborated by indoor 1.35×. Reads 002–004
+fall in cloud-swung stretches → they corroborate *shape* only.
+
+### Tool change — `src/as7341_apply_validation.py`
+`read_rpi_csv` now auto-detects the **wide joinbyfield** layout (was long
+`wavelength_nm,last` only) and takes **`--rpi-time HH:MM`** to pick the row nearest a
+capture time (default: last row). Backward compatible. Off-Pi runner (stubs board/
+adafruit) added at `claude_wd/run_validation_offline.py` (untracked).
+
+### Correction applied — single `--fix-channels all` on read 005
+```
+python3 src/as7341_apply_validation.py --fix-channels all --rpi-time 09:00 \
+  --pair "C-7000_out/comparisons/AS7341-c7000REF_005_02°_5263K.csv:C-7000_out/comparisons/Rpi_Light Spectrum (W_m2_nm)-data-as-joinbyfield-2026-06-05 09_00_41.csv"
+```
+**Pitfall avoided:** a 2-step "shape (4 reads) then absolute (005)" plan is WRONG — the
+RPi export holds irradiance computed with the *old* cal (static data), so a second pass
+re-reads the same discrepancy and **stacks** (double-corrects shape). One `--fix-channels
+all` does shape+absolute together against the static export. Read 005's shape is within
+<4% of the 4-read average (which corroborates it), so nothing is lost.
+
+| ch | corr old | corr new | datasheet |
+|---|---|---|---|
+| 415 | 3.166 | 2.133 | 2.00 |
+| 445 | 1.922 | 1.640 | 1.67 |
+| 480 | 1.558 | 1.363 | 1.33 |
+| 515 | 1.153 | 1.127 | 1.11 |
+| 555 | 1.000 | 1.000 | 1.00 |
+| 590 | 0.881 | 0.866 | 1.11 |
+| 630 | 0.641 | 0.687 | 1.43 |
+| 680 | 0.476 | 0.532 | 2.00 |
+
+Absolute: `responsivity_BC_per_W_m2_nm` scaled by the per-channel multiplier (555 ×1.315),
+so **irr_* and PFD drop ~1.3×** (removes the long-standing over-read). Blue ≈ datasheet;
+red lifts but stays below (the known 670–700 nm pE-4000 coverage gap is unchanged).
+
+### Verification (offline, `claude_wd/sun_validation_morning.py` + post-fix check)
+- post-fix RPi@09:00 / C-7000(005) = **1.00** all channels.
+- post-fix shape vs all 4 reads flat: 415 residual **1.55× → 1.00–1.10×**; red 0.88 → 0.96–1.00.
+
+### What needs doing next
+1. **Live confirm on RPi-1:** `git pull && sudo systemctl restart as7341`, then a fresh
+   Grafana wavelength export vs a steady-sun C-7000 read.
+2. **Absolute refinement:** the K=1.315 rides on one read (005). A clean **steady-sun**
+   capture (no cloud) with 2–3 co-pointed pairs at different CCT would tighten it and let
+   `--fix-channels all` average multiple reads honestly.
+3. **Red end (630/680 still < datasheet):** genuine 670–700 nm LED gap — add a red source
+   and re-sweep Phase 2, or move off the Gaussian edge-channel model.
+4. Residual ~10% at 415 for the 06:50–07:33 reads ⇒ if a 4-read shape + 005 absolute is
+   wanted, add a tool mode that applies a list-mode shape × a uniform K (avoids the
+   stacking pitfall above).
+
+### Files touched
+- `as7341_responsivity.json` — second `meta.validation` (mode `all`, sun 005).
+- `src/as7341_apply_validation.py` — wide-CSV detection + `--rpi-time`.
+- `claude_wd/HANDOFF.md` — this section.
+- `claude_wd/sun_validation_morning.py`, `claude_wd/run_validation_offline.py` — new (untracked).
